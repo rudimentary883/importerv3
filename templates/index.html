@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>Choose Import Mode</h2>
+    <div class="mode-toggle">
+        <button type="button" class="mode-btn active" onclick="setMode('csv')" id="btn-csv">
+            Download CSVs
+        </button>
+        <button type="button" class="mode-btn" onclick="setMode('api')" id="btn-api">
+            Direct API Import
+        </button>
+    </div>
+
+    <form action="{{ url_for('upload') }}" method="POST" enctype="multipart/form-data" id="upload-form">
+        <input type="hidden" name="mode" id="mode-input" value="csv">
+
+        <div class="api-form" id="api-form">
+            <h3 style="margin-bottom: 1rem; color: #4a5568;">Tabbycat API Settings</h3>
+            <div class="form-group">
+                <label for="api_url">Tabbycat URL</label>
+                <input type="url" name="api_url" id="api_url" placeholder="https://your-tournament.herokuapp.com">
+                <small>Your Tabbycat instance URL (e.g., https://wa26.herokuapp.com)</small>
+            </div>
+            <div class="form-group">
+                <label for="api_token">API Token</label>
+                <input type="password" name="api_token" id="api_token" placeholder="Paste your API token here">
+                <small>Found under "Change Password" on your Tabbycat site home page</small>
+            </div>
+            <div class="form-group">
+                <label for="tournament_slug">Tournament Slug</label>
+                <input type="text" name="tournament_slug" id="tournament_slug" placeholder="e.g., wa26">
+                <small>The slug from your tournament URL (e.g., /wa26/)</small>
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="testConnection()" style="margin-bottom: 1rem;">
+                Test Connection
+            </button>
+            <span id="test-result"></span>
+        </div>
+
+        <div class="upload-section">
+            <div class="upload-box required">
+                <label>1. Institutions (REQUIRED)</label>
+                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
+                    Columns: <code>id, name, code</code>
+                </p>
+                <input type="file" name="institutions" accept=".csv,.xlsx,.xls" required>
+            </div>
+
+            <div class="upload-box">
+                <label>2. Adjudicators</label>
+                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
+                    Columns: <code>id, name, institution, email, gender, base_score, independent, adj_core, notes</code>
+                </p>
+                <input type="file" name="adjudicators" accept=".csv,.xlsx,.xls">
+            </div>
+
+            <div class="upload-box">
+                <label>3. Teams</label>
+                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
+                    Columns: <code>id, institution, reference, short_reference, code_name, use_institution_prefix, emoji, team_name (human)</code>
+                </p>
+                <input type="file" name="teams" accept=".csv,.xlsx,.xls">
+            </div>
+
+            <div class="upload-box">
+                <label>4. Speakers</label>
+                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
+                    Columns: <code>id, name, gender, email, phone, anonymous, team, categories, initials_match</code>
+                </p>
+                <input type="file" name="speakers" accept=".csv,.xlsx,.xls">
+            </div>
+        </div>
+
+        <div style="text-align: center;">
+            <button type="submit" class="btn btn-primary" id="submit-btn">
+                Process Files
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>How It Works</h2>
+    <div class="instructions">
+        <h4>Mode 1: Download CSVs</h4>
+        <p>Generates Tabbycat-compatible CSV files that you manually import using:</p>
+        <ul>
+            <li><strong>Simple Importer:</strong> Copy-paste into Tabbycat's web interface</li>
+            <li><strong>importtournament command:</strong> Run via SSH on your Tabbycat server</li>
+        </ul>
+    </div>
+    <div class="instructions">
+        <h4>Mode 2: Direct API Import</h4>
+        <p>Connects directly to your Tabbycat instance via REST API and creates:</p>
+        <ul>
+            <li>Institutions first, then Teams (with nested Speakers), then Adjudicators</li>
+            <li>Requires API token from your Tabbycat account</li>
+            <li>Works with Calico, Heroku, Render, or self-hosted Tabbycat</li>
+        </ul>
+    </div>
+</div>
+
+<script>
+function setMode(mode) {
+    document.getElementById('mode-input').value = mode;
+    document.getElementById('btn-csv').classList.toggle('active', mode === 'csv');
+    document.getElementById('btn-api').classList.toggle('active', mode === 'api');
+    document.getElementById('api-form').classList.toggle('active', mode === 'api');
+    document.getElementById('submit-btn').textContent = mode === 'api' ? 'Import Directly to Tabbycat' : 'Process & Download CSVs';
+}
+
+async function testConnection() {
+    const btn = document.querySelector('button[onclick="testConnection()"]');
+    const result = document.getElementById('test-result');
+
+    const url = document.getElementById('api_url').value;
+    const token = document.getElementById('api_token').value;
+    const slug = document.getElementById('tournament_slug').value;
+
+    if (!url || !token || !slug) {
+        result.innerHTML = '<span style="color: #c53030;">Fill in all fields first</span>';
+        return;
+    }
+
+    btn.disabled = true;
+    result.innerHTML = '<span class="spinner"></span> Testing...';
+
+    try {
+        const resp = await fetch('/test-connection', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({base_url: url, token: token, slug: slug})
+        });
+        const data = await resp.json();
+
+        if (data.ok) {
+            result.innerHTML = '<span style="color: #38a169;">Connection successful!</span>';
+        } else {
+            result.innerHTML = '<span style="color: #c53030;">Connection failed. Check URL, token, and that API is enabled in Tabbycat settings.</span>';
+        }
+    } catch (e) {
+        result.innerHTML = '<span style="color: #c53030;">Error: ' + e.message + '</span>';
+    }
+
+    btn.disabled = false;
+}
+</script>
+{% endblock %}
