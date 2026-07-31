@@ -1,6 +1,7 @@
 """
-Tabbycat API Importer - Direct Database Import via REST API
-Optimized for Render Free Tier (512MB RAM, 0.1 CPU)
+Tabbycat API Importer - Pure Python, no pandas
+Works on any Python version including 3.14
+Optimized for Render Free Tier (512MB RAM)
 """
 
 import os
@@ -11,24 +12,21 @@ import time
 import requests
 
 from flask import Flask, render_template, request, send_file, flash, redirect, url_for, jsonify
-import pandas as pd
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'tabbycat-importer-key-2024')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls'}
-
 
 def clean_string(val):
-    if pd.isna(val) or val is None:
+    if val is None:
         return ''
     s = str(val).strip()
-    return s if s != 'nan' else ''
+    return s if s != 'None' else ''
 
 
 def parse_bool(val):
-    if pd.isna(val) or val is None:
+    if val is None:
         return False
     if isinstance(val, bool):
         return val
@@ -36,7 +34,7 @@ def parse_bool(val):
 
 
 def parse_float_or_none(val):
-    if pd.isna(val) or val is None or str(val).strip() == '':
+    if val is None or str(val).strip() == '':
         return None
     try:
         return float(val)
@@ -44,11 +42,39 @@ def parse_float_or_none(val):
         return None
 
 
+def read_csv_file(file):
+    """Read CSV file into list of dicts using stdlib only"""
+    text = file.read().decode('utf-8')
+    reader = csv.DictReader(io.StringIO(text))
+    return list(reader)
+
+
+def read_excel_file(file):
+    """Read Excel file using openpyxl"""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise ImportError("openpyxl is required for Excel files")
+    
+    wb = load_workbook(file)
+    ws = wb.active
+    
+    headers = [cell.value for cell in ws[1]]
+    rows = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        row_dict = {}
+        for i, header in enumerate(headers):
+            if header:
+                row_dict[header] = row[i] if i < len(row) else None
+        rows.append(row_dict)
+    return rows
+
+
 def read_uploaded_file(file):
     ext = file.filename.rsplit('.', 1)[1].lower()
     if ext == 'csv':
-        return pd.read_csv(file, dtype=str, keep_default_na=True)
-    return pd.read_excel(file, dtype=str, keep_default_na=True)
+        return read_csv_file(file)
+    return read_excel_file(file)
 
 
 # =============================================================================
@@ -151,62 +177,35 @@ class TabbycatAPI:
 
 
 # =============================================================================
-# CSV PROCESSORS
+# CSV PROCESSORS (pure Python)
 # =============================================================================
 
-def process_institutions(df):
+def process_institutions(rows):
     results = []
     errors = []
-    df_cols = {c.lower().strip(): c for c in df.columns}
-    name_col = df_cols.get('name', 'name')
-    code_col = df_cols.get('code', 'code')
-
-    for idx, row in df.iterrows():
-        name = clean_string(row.get(name_col, ''))
-        code = clean_string(row.get(code_col, ''))
+    for idx, row in enumerate(rows, start=2):
+        name = clean_string(row.get('name', ''))
+        code = clean_string(row.get('code', ''))
         if not name and not code:
             continue
         if not name:
-            errors.append(f"Row {idx+2}: Missing institution name")
+            errors.append(f"Row {idx}: Missing institution name")
             continue
         if not code:
-            errors.append(f"Row {idx+2}: Missing code for '{name}'")
+            errors.append(f"Row {idx}: Missing code for '{name}'")
             continue
         results.append({'name': name, 'code': code})
     return results, errors
 
 
-def process_adjudicators(df):
+def process_adjudicators(rows):
     results = []
     errors = []
-    df_cols = {c.lower().strip(): c for c in df.columns}
-    col_map = {}
-    expected = {
-        'name': ['name'],
-        'institution': ['institution'],
-        'email': ['email'],
-        'gender': ['gender'],
-        'base_score': ['base_score', 'base score', 'basescore'],
-        'independent': ['independent'],
-        'adj_core': ['adj_core', 'adj core', 'adjcore', 'core'],
-        'notes': ['notes', 'note']
-    }
-
-    for key, alts in expected.items():
-        for alt in alts:
-            if alt in df_cols:
-                col_map[key] = df_cols[alt]
-                break
-
-    if 'name' not in col_map:
-        raise ValueError(f"Missing 'name' column. Found: {list(df.columns)}")
-
-    for idx, row in df.iterrows():
-        name = clean_string(row.get(col_map.get('name'), ''))
+    for idx, row in enumerate(rows, start=2):
+        name = clean_string(row.get('name', ''))
         if not name:
             continue
-
-        gender = clean_string(row.get(col_map.get('gender', 'gender'), ''))
+        gender = clean_string(row.get('gender', ''))
         gender_norm = ''
         if gender.upper() in ['M', 'MALE']:
             gender_norm = 'M'
@@ -214,99 +213,51 @@ def process_adjudicators(df):
             gender_norm = 'F'
         elif gender.upper() in ['O', 'OTHER']:
             gender_norm = 'O'
-
         results.append({
             'name': name,
-            'institution': clean_string(row.get(col_map.get('institution', 'institution'), '')),
-            'email': clean_string(row.get(col_map.get('email', 'email'), '')),
+            'institution': clean_string(row.get('institution', '')),
+            'email': clean_string(row.get('email', '')),
             'gender': gender_norm,
-            'base_score': parse_float_or_none(row.get(col_map.get('base_score', 'base_score'), None)),
-            'independent': parse_bool(row.get(col_map.get('independent', 'independent'), False)),
-            'adj_core': parse_bool(row.get(col_map.get('adj_core', 'adj_core'), False)),
-            'notes': clean_string(row.get(col_map.get('notes', 'notes'), ''))
+            'base_score': parse_float_or_none(row.get('base_score')),
+            'independent': parse_bool(row.get('independent')),
+            'adj_core': parse_bool(row.get('adj_core')),
+            'notes': clean_string(row.get('notes', ''))
         })
     return results, errors
 
 
-def process_teams(df):
+def process_teams(rows):
     results = []
     errors = []
-    df_cols = {c.lower().strip(): c for c in df.columns}
-    col_map = {}
-    expected = {
-        'institution': ['institution'],
-        'reference': ['reference'],
-        'short_reference': ['short_reference', 'short reference', 'shortreference'],
-        'code_name': ['code name', 'codename', 'code_name'],
-        'use_institution_prefix': ['use_institution_prefix', 'use institution prefix'],
-        'emoji': ['emoji'],
-        'team_name_human': ['team_name (human)', 'team_name(human)', 'team name (human)']
-    }
-
-    for key, alts in expected.items():
-        for alt in alts:
-            if alt in df_cols:
-                col_map[key] = df_cols[alt]
-                break
-
-    if 'institution' not in col_map:
-        raise ValueError(f"Missing 'institution' column. Found: {list(df.columns)}")
-
-    for idx, row in df.iterrows():
-        institution = clean_string(row.get(col_map.get('institution'), ''))
+    for idx, row in enumerate(rows, start=2):
+        institution = clean_string(row.get('institution', ''))
         if not institution:
             continue
-
-        ref = clean_string(row.get(col_map.get('reference', 'reference'), ''))
+        ref = clean_string(row.get('reference', ''))
         if not ref:
-            errors.append(f"Row {idx+2}: Missing reference for institution '{institution}'")
+            errors.append(f"Row {idx}: Missing reference for institution '{institution}'")
             continue
-
-        short_ref = clean_string(row.get(col_map.get('short_reference', ''), ref))
-
+        short_ref = clean_string(row.get('short_reference', ref))
         results.append({
             'institution': institution,
             'reference': ref,
             'short_reference': short_ref or ref,
-            'code_name': clean_string(row.get(col_map.get('code_name', ''), '')),
-            'use_institution_prefix': parse_bool(row.get(col_map.get('use_institution_prefix', ''), True)),
-            'emoji': clean_string(row.get(col_map.get('emoji', ''), '')),
-            'team_name_human': clean_string(row.get(col_map.get('team_name_human', ''), ''))
+            'code_name': clean_string(row.get('code_name', '')),
+            'use_institution_prefix': parse_bool(row.get('use_institution_prefix', True)),
+            'emoji': clean_string(row.get('emoji', '')),
+            'team_name_human': clean_string(row.get('team_name (human)', ''))
         })
     return results, errors
 
 
-def process_speakers(df):
+def process_speakers(rows):
     results = []
     errors = []
-    df_cols = {c.lower().strip(): c for c in df.columns}
-    col_map = {}
-    expected = {
-        'name': ['name'],
-        'gender': ['gender'],
-        'email': ['email'],
-        'phone': ['phone'],
-        'anonymous': ['anonymous'],
-        'team': ['team'],
-        'categories': ['categories'],
-        'initials_match': ['initials match', 'initials_match']
-    }
-
-    for key, alts in expected.items():
-        for alt in alts:
-            if alt in df_cols:
-                col_map[key] = df_cols[alt]
-                break
-
-    if 'name' not in col_map:
-        raise ValueError(f"Missing 'name' column. Found: {list(df.columns)}")
-
-    for idx, row in df.iterrows():
-        name = clean_string(row.get(col_map.get('name'), ''))
+    for idx, row in enumerate(rows, start=2):
+        name = clean_string(row.get('name', ''))
         if not name:
             continue
-
-        gender = clean_string(row.get(col_map.get('gender', 'gender'), ''))
+        gender = clean_string(row.get('gender', ''))
         gender_norm = ''
         if gender.upper() in ['M', 'MALE']:
             gender_norm = 'M'
@@ -314,16 +265,15 @@ def process_speakers(df):
             gender_norm = 'F'
         elif gender.upper() in ['O', 'OTHER']:
             gender_norm = 'O'
-
         results.append({
             'name': name,
             'gender': gender_norm,
-            'email': clean_string(row.get(col_map.get('email', 'email'), '')),
-            'phone': clean_string(row.get(col_map.get('phone', 'phone'), '')),
-            'anonymous': parse_bool(row.get(col_map.get('anonymous', 'anonymous'), False)),
-            'team': clean_string(row.get(col_map.get('team', 'team'), '')),
-            'categories': clean_string(row.get(col_map.get('categories', 'categories'), '')),
-            'initials_match': clean_string(row.get(col_map.get('initials_match'), ''))
+            'email': clean_string(row.get('email', '')),
+            'phone': clean_string(row.get('phone', '')),
+            'anonymous': parse_bool(row.get('anonymous')),
+            'team': clean_string(row.get('team', '')),
+            'categories': clean_string(row.get('categories', '')),
+            'initials_match': clean_string(row.get('initials_match', ''))
         })
     return results, errors
 
@@ -420,8 +370,8 @@ def upload():
             flash('Institutions file is required', 'error')
             return redirect(url_for('index'))
 
-        inst_df = read_uploaded_file(inst_file)
-        institutions, inst_errors = process_institutions(inst_df)
+        inst_rows = read_uploaded_file(inst_file)
+        institutions, inst_errors = process_institutions(inst_rows)
         institution_codes = {i['code'] for i in institutions}
 
         adjudicators = []
@@ -432,19 +382,19 @@ def upload():
         speaker_errors = []
 
         if adj_file and adj_file.filename:
-            adj_df = read_uploaded_file(adj_file)
-            adjudicators, adj_errors = process_adjudicators(adj_df)
+            adj_rows = read_uploaded_file(adj_file)
+            adjudicators, adj_errors = process_adjudicators(adj_rows)
 
         if teams_file and teams_file.filename:
-            teams_df = read_uploaded_file(teams_file)
-            teams, team_errors = process_teams(teams_df)
+            team_rows = read_uploaded_file(teams_file)
+            teams, team_errors = process_teams(team_rows)
             for t in teams:
                 if t['institution'] not in institution_codes:
                     team_errors.append(f"Team '{t['institution']} {t['reference']}': institution '{t['institution']}' not found")
 
         if speakers_file and speakers_file.filename:
-            speakers_df = read_uploaded_file(speakers_file)
-            speakers, speaker_errors = process_speakers(speakers_df)
+            speaker_rows = read_uploaded_file(speakers_file)
+            speakers, speaker_errors = process_speakers(speaker_rows)
 
         api_results = None
         if mode == 'api':
