@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div style="text-align: center; margin-bottom: 2rem;">
+    <a href="{{ url_for('index') }}" class="btn btn-primary">&larr; Upload New Files</a>
+</div>
+
+{% if mode == 'api' and api_results %}
+<div class="api-result">
+    <h3>API Import Results</h3>
+    <div class="stat"><strong>{{ api_results.success }}</strong> created successfully</div>
+    <div class="stat"><strong>{{ api_results.failed }}</strong> failed</div>
+    {% if api_results.errors %}
+    <div style="margin-top: 1rem;">
+        <h4 style="color: #c53030;">Errors:</h4>
+        <ul style="margin-left: 1.5rem; color: #742a2a;">
+            {% for err in api_results.errors[:10] %}
+            <li>{{ err }}</li>
+            {% endfor %}
+            {% if api_results.errors|length > 10 %}
+            <li>... and {{ api_results.errors|length - 10 }} more</li>
+            {% endif %}
+        </ul>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<div class="stats-grid">
+    <div class="stat-card"><h3>{{ inst_count }}</h3><p>Institutions</p></div>
+    <div class="stat-card"><h3>{{ adj_count }}</h3><p>Adjudicators</p></div>
+    <div class="stat-card"><h3>{{ team_count }}</h3><p>Teams</p></div>
+    <div class="stat-card"><h3>{{ speaker_count }}</h3><p>Speakers</p></div>
+</div>
+
+<div class="card">
+    <h2>Download Tabbycat CSV Files</h2>
+    <p style="color: #718096; margin-bottom: 1rem;">Even in API mode, you can download these as backup:</p>
+    <div class="download-grid">
+        <a href="{{ url_for('download', file_type='institutions') }}" class="btn btn-success">institutions.csv</a>
+        <a href="{{ url_for('download', file_type='adjudicators') }}" class="btn btn-success">adjudicators.csv</a>
+        <a href="{{ url_for('download', file_type='teams') }}" class="btn btn-success">teams.csv</a>
+        <a href="{{ url_for('download', file_type='speakers') }}" class="btn btn-success">speakers.csv</a>
+    </div>
+</div>
+
+{% if inst_errors %}
+<div class="error-list"><h4>Institution Warnings ({{ inst_errors|length }})</h4><ul>{% for e in inst_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+{% if adj_errors %}
+<div class="error-list"><h4>Adjudicator Warnings ({{ adj_errors|length }})</h4><ul>{% for e in adj_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+{% if team_errors %}
+<div class="error-list"><h4>Team Warnings ({{ team_errors|length }})</h4><ul>{% for e in team_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+{% if speaker_errors %}
+<div class="error-list"><h4>Speaker Warnings ({{ speaker_errors|length }})</h4><ul>{% for e in speaker_errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<div class="card">
+    <h2>Data Preview</h2>
+
+    <h3 style="margin-top: 1rem; color: #667eea;">Institutions ({{ institutions|length }})</h3>
+    <table>
+        <tr><th>#</th><th>Name</th><th>Code</th></tr>
+        {% for inst in institutions[:10] %}
+        <tr><td>{{ loop.index }}</td><td>{{ inst.name }}</td><td><code>{{ inst.code }}</code></td></tr>
+        {% endfor %}
+    </table>
+    {% if institutions|length > 10 %}<p style="text-align:center;color:#718096">... and {{ institutions|length - 10 }} more</p>{% endif %}
+
+    <h3 style="margin-top: 1.5rem; color: #667eea;">Adjudicators ({{ adjudicators|length }})</h3>
+    <table>
+        <tr><th>#</th><th>Name</th><th>Inst.</th><th>Gender</th><th>Core</th><th>Ind.</th></tr>
+        {% for adj in adjudicators[:10] %}
+        <tr><td>{{ loop.index }}</td><td>{{ adj.name }}</td><td>{{ adj.institution or '-' }}</td><td>{{ adj.gender or '-' }}</td><td>{{ 'Yes' if adj.adj_core else 'No' }}</td><td>{{ 'Yes' if adj.independent else 'No' }}</td></tr>
+        {% endfor %}
+    </table>
+    {% if adjudicators|length > 10 %}<p style="text-align:center;color:#718096">... and {{ adjudicators|length - 10 }} more</p>{% endif %}
+
+    <h3 style="margin-top: 1.5rem; color: #667eea;">Teams ({{ teams|length }})</h3>
+    <table>
+        <tr><th>#</th><th>Institution</th><th>Reference</th><th>Short Ref</th><th>Code Name</th></tr>
+        {% for team in teams[:10] %}
+        <tr><td>{{ loop.index }}</td><td>{{ team.institution }}</td><td>{{ team.reference }}</td><td>{{ team.short_reference }}</td><td>{{ team.code_name or '-' }}</td></tr>
+        {% endfor %}
+    </table>
+    {% if teams|length > 10 %}<p style="text-align:center;color:#718096">... and {{ teams|length - 10 }} more</p>{% endif %}
+
+    <h3 style="margin-top: 1.5rem; color: #667eea;">Speakers ({{ speakers|length }})</h3>
+    <table>
+        <tr><th>#</th><th>Name</th><th>Team</th><th>Gender</th><th>Anonymous</th></tr>
+        {% for spk in speakers[:10] %}
+        <tr><td>{{ loop.index }}</td><td>{{ spk.name }}</td><td>{{ spk.team }}</td><td>{{ spk.gender or '-' }}</td><td>{{ 'Yes' if spk.anonymous else 'No' }}</td></tr>
+        {% endfor %}
+    </table>
+    {% if speakers|length > 10 %}<p style="text-align:center;color:#718096">... and {{ speakers|length - 10 }} more</p>{% endif %}
+</div>
+
+<div class="card">
+    <h2>Next Steps</h2>
+    <div class="instructions">
+        <h4>If you used API Import:</h4>
+        <ol>
+            <li>Log into your Tabbycat admin panel</li>
+            <li>Verify institutions, teams, and adjudicators were created</li>
+            <li>Check for any errors in the API Results section above</li>
+        </ol>
+    </div>
+    <div class="instructions">
+        <h4>If you downloaded CSVs:</h4>
+        <ol>
+            <li>Go to Setup &rarr; Import Data in Tabbycat</li>
+            <li>Use Simple Importer or importtournament command</li>
+            <li>Institutions must be imported BEFORE teams</li>
+        </ol>
+    </div>
+</div>
+{% endblock %}
