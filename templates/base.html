@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Tabbycat Importer{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #2d3748; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem 0; text-align: center; margin-bottom: 2rem; }
+        header h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.07); padding: 2rem; margin-bottom: 2rem; }
+        .card h2 { color: #4a5568; margin-bottom: 1rem; font-size: 1.3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; }
+        .upload-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .upload-box { border: 2px dashed #cbd5e0; border-radius: 8px; padding: 1.5rem; text-align: center; transition: all 0.3s; }
+        .upload-box:hover { border-color: #667eea; background: #f7fafc; }
+        .upload-box.required { border-color: #fc8181; background: #fff5f5; }
+        .upload-box label { display: block; font-weight: 600; margin-bottom: 0.5rem; color: #4a5568; }
+        .upload-box.required label::after { content: " *"; color: #e53e3e; }
+        input[type="file"] { margin-top: 0.5rem; width: 100%; }
+        input[type="text"], input[type="password"], input[type="url"] { width: 100%; padding: 0.5rem; border: 1px solid #cbd5e0; border-radius: 6px; margin-top: 0.25rem; }
+        .btn { display: inline-block; padding: 0.75rem 2rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.3s; text-decoration: none; }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+        .btn-success { background: #48bb78; color: white; }
+        .btn-success:hover { background: #38a169; }
+        .btn-secondary { background: #718096; color: white; }
+        .alert { padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
+        .alert-error { background: #fed7d7; color: #c53030; border: 1px solid #fc8181; }
+        .alert-success { background: #c6f6d5; color: #22543d; border: 1px solid #9ae6b4; }
+        .alert-info { background: #bee3f8; color: #2b6cb0; border: 1px solid #90cdf4; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 1.5rem; border-radius: 12px; text-align: center; }
+        .stat-card h3 { font-size: 2.5rem; margin-bottom: 0.25rem; }
+        .download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
+        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f7fafc; font-weight: 600; color: #4a5568; }
+        .error-list { background: #fff5f5; border: 1px solid #fc8181; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+        .error-list h4 { color: #c53030; margin-bottom: 0.5rem; }
+        .error-list li { color: #742a2a; margin-left: 1.5rem; font-size: 0.9rem; }
+        .instructions { background: #ebf8ff; border-left: 4px solid #4299e1; padding: 1rem 1.5rem; margin-bottom: 1rem; border-radius: 0 8px 8px 0; }
+        .instructions h4 { color: #2b6cb0; margin-bottom: 0.5rem; }
+        .instructions ol, .instructions ul { margin-left: 1.5rem; }
+        code { background: #edf2f7; padding: 0.2rem 0.4rem; border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+        .mode-toggle { display: flex; gap: 1rem; margin-bottom: 1.5rem; justify-content: center; }
+        .mode-btn { padding: 0.5rem 1.5rem; border: 2px solid #667eea; background: white; color: #667eea; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .mode-btn.active { background: #667eea; color: white; }
+        .api-form { display: none; background: #f7fafc; padding: 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; }
+        .api-form.active { display: block; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; font-weight: 600; margin-bottom: 0.25rem; color: #4a5568; }
+        .form-group small { color: #718096; font-size: 0.85rem; }
+        .api-result { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 8px; padding: 1.5rem; margin-top: 1rem; }
+        .api-result h3 { color: #22543d; margin-bottom: 0.5rem; }
+        .api-result .stat { display: inline-block; margin-right: 2rem; font-size: 1.1rem; }
+        .api-result .stat strong { font-size: 1.5rem; color: #2f855a; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #667eea; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: middle; margin-left: 0.5rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Tabbycat Importer</h1>
+            <p>CSV Converter + Direct API Import</p>
+        </div>
+    </header>
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>
