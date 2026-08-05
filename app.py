@@ -1,16 +1,11 @@
 """
-Tabbycat API Importer v3.1 - Fixed API Paths + BP/3v3 Support
+Tabbycat API Importer v3.2 — FIXED: Institutions use global endpoint
 Pure Python, no pandas. Works on Render Free Tier (512MB RAM).
 
-KEY FIXES FROM v3.0:
-- API base path: /api/v1/tournaments/ (was /api/tournaments/)
-- Removed trailing slashes from endpoints (Tabbycat uses trailing_slash=False)
-- test_connection() now hits a real endpoint with full diagnostics
-- Added User-Agent header to avoid Cloudflare/WAF blocks
-- Added Debate Format selector (BP = 2 speakers, 3v3 = 3 speakers)
-- Added /api-diagnose endpoint for troubleshooting
-- Added session-auth fallback (username/password) if Token auth fails
-- Better error messages with HTTP status + response body
+CRITICAL FIX FROM v3.1:
+- Institutions are GLOBAL objects. POST to /api/v1/institutions (not tournament-scoped).
+- Teams/Adjudicators/Speakers are tournament-scoped. POST to /api/v1/tournaments/{slug}/...
+- Institution foreign keys must be passed as full API URLs, not raw IDs.
 """
 
 import os
@@ -84,20 +79,22 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT (FIXED)
+# TABBYCAT API CLIENT (v3.2 — FIXED INSTITUTION ENDPOINT)
 # =============================================================================
 
 class TabbycatAPI:
     """
-    Fixed API client that uses the correct Tabbycat API paths.
+    Tabbycat API Client with correct endpoint routing.
     
-    Tabbycat API structure (from source code):
-      /api/v1/tournaments/{slug}/institutions
-      /api/v1/tournaments/{slug}/teams
-      /api/v1/tournaments/{slug}/adjudicators
-      /api/v1/tournaments/{slug}/speakers
+    ENDPOINTS:
+      Global:    POST /api/v1/institutions              (create institution)
+      Tournament GET /api/v1/tournaments/{slug}/institutions  (list institutions in tournament)
+      Tournament POST /api/v1/tournaments/{slug}/teams     (create team)
+      Tournament POST /api/v1/tournaments/{slug}/adjudicators (create adjudicator)
+      Tournament POST /api/v1/tournaments/{slug}/speakers  (create speaker)
     
-    Note: NO trailing slashes. Tabbycat uses SimpleRouter(trailing_slash=False).
+    Foreign keys (institution on team/adj) must be full URLs like:
+      "https://site.com/api/v1/institutions/42/"
     """
 
     def __init__(self, base_url, token, tournament_slug, username=None, password=None):
@@ -108,13 +105,13 @@ class TabbycatAPI:
         self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'TabbycatImporter/3.1 (Render; Python requests)',
+            'User-Agent': 'TabbycatImporter/3.2 (Render; Python requests)',
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
-        self.created_institutions = {}  # code -> id
+        self.created_institutions = {}  # code -> {id, url}
         self.stats = {'success': 0, 'failed': 0, 'errors': []}
-        self.auth_method = None  # 'token' or 'session'
+        self.auth_method = None
         self._authenticate()
 
     def _authenticate(self):
@@ -157,56 +154,53 @@ class TabbycatAPI:
             return False
 
     def _test_auth(self):
-        """Quick auth test by hitting the institutions list endpoint."""
+        """Quick auth test by hitting the global institutions list."""
         try:
-            url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
+            url = f"{self.base_url}/api/v1/institutions"
             resp = self.session.get(url, timeout=10)
             return resp.status_code in (200, 401)
         except Exception:
             return False
 
-    def _url(self, path):
-        """Build correct API URL with NO trailing slash on the resource."""
+    def _global_url(self, path):
+        """Build global API URL (no trailing slash)."""
+        return f"{self.base_url}/api/v1{path}"
+
+    def _tournament_url(self, path):
+        """Build tournament-scoped API URL (no trailing slash)."""
         return f"{self.base_url}/api/v1/tournaments/{self.slug}{path}"
 
-    def _post(self, path, data, retries=3):
-        url = self._url(path)
+    def _request(self, method, url, data=None, retries=3):
         for attempt in range(retries):
             try:
                 time.sleep(0.4)
-                resp = self.session.post(url, json=data, timeout=30)
-                if resp.status_code == 201:
+                if method == 'POST':
+                    resp = self.session.post(url, json=data, timeout=30)
+                else:
+                    resp = self.session.get(url, timeout=30)
+                
+                if resp.status_code in (200, 201):
                     self.stats['success'] += 1
                     return resp.json()
                 elif resp.status_code == 429:
                     time.sleep(2 ** attempt)
                     continue
                 else:
-                    error = f"HTTP {resp.status_code} on POST {path}: {resp.text[:300]}"
+                    error = f"HTTP {resp.status_code} on {method} {url.replace(self.base_url, '')}: {resp.text[:300]}"
                     self.stats['errors'].append(error)
                     self.stats['failed'] += 1
                     return None
             except requests.exceptions.RequestException as e:
                 if attempt == retries - 1:
-                    error = f"Request failed on {path}: {str(e)}"
+                    error = f"Request failed on {method} {url.replace(self.base_url, '')}: {str(e)}"
                     self.stats['errors'].append(error)
                     self.stats['failed'] += 1
                     return None
                 time.sleep(1)
         return None
 
-    def _get(self, path, timeout=10):
-        url = self._url(path)
-        try:
-            return self.session.get(url, timeout=timeout)
-        except requests.exceptions.RequestException as e:
-            return type('obj', (object,), {'status_code': 0, 'text': str(e)})()
-
     def test_connection(self):
-        """
-        Comprehensive connection test with full diagnostics.
-        Returns dict with detailed info instead of just True/False.
-        """
+        """Comprehensive connection test with full diagnostics."""
         diagnostics = {
             'ok': False,
             'auth_method': self.auth_method,
@@ -214,6 +208,7 @@ class TabbycatAPI:
             'suggestion': ''
         }
         
+        # Step 1: Base URL reachable
         try:
             resp = self.session.get(self.base_url, timeout=10, allow_redirects=True)
             diagnostics['steps'].append({
@@ -231,31 +226,51 @@ class TabbycatAPI:
             diagnostics['suggestion'] = 'Cannot reach your Tabbycat URL. Check for typos.'
             return diagnostics
         
+        # Step 2: Global institutions list (GET)
         try:
-            resp = self.session.get(f"{self.base_url}/api/v1/", timeout=10)
+            url = f"{self.base_url}/api/v1/institutions"
+            resp = self.session.get(url, timeout=10)
             diagnostics['steps'].append({
-                'step': 'API v1 root (/api/v1/)',
+                'step': 'Global institutions list (GET /api/v1/institutions)',
                 'status': resp.status_code,
-                'ok': resp.status_code < 500,
+                'ok': resp.status_code == 200,
                 'body_preview': resp.text[:100] if resp.text else ''
             })
         except Exception as e:
             diagnostics['steps'].append({
-                'step': 'API v1 root',
+                'step': 'Global institutions list',
                 'status': 0,
                 'ok': False,
                 'error': str(e)
             })
         
-        url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
+        # Step 3: Tournament institutions list (GET — read-only)
         try:
+            url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
             resp = self.session.get(url, timeout=10)
             diagnostics['steps'].append({
-                'step': 'Tournament institutions endpoint',
-                'url': url,
+                'step': 'Tournament institutions list (GET)',
                 'status': resp.status_code,
                 'ok': resp.status_code == 200,
-                'body_preview': resp.text[:200] if resp.text else ''
+                'body_preview': resp.text[:100] if resp.text else ''
+            })
+        except Exception as e:
+            diagnostics['steps'].append({
+                'step': 'Tournament institutions list',
+                'status': 0,
+                'ok': False,
+                'error': str(e)
+            })
+        
+        # Step 4: Tournament teams list (GET — verify tournament exists)
+        try:
+            url = f"{self.base_url}/api/v1/tournaments/{self.slug}/teams"
+            resp = self.session.get(url, timeout=10)
+            diagnostics['steps'].append({
+                'step': 'Tournament teams list (GET)',
+                'status': resp.status_code,
+                'ok': resp.status_code in (200, 401),
+                'body_preview': resp.text[:100] if resp.text else ''
             })
             
             if resp.status_code == 200:
@@ -264,36 +279,52 @@ class TabbycatAPI:
             elif resp.status_code == 401:
                 diagnostics['suggestion'] = 'Token is invalid or expired. Get a new token from your Tabbycat Change Password page. If that fails, try providing your admin username and password for session auth.'
             elif resp.status_code == 403:
-                diagnostics['suggestion'] = 'Access forbidden. Your token/user may not have admin permissions for this tournament. If using Calico, the API might be behind Cloudflare. Try adding your admin username/password as a fallback.'
+                diagnostics['suggestion'] = 'Access forbidden. Your token/user may not have admin permissions for this tournament. Try Session Auth Fallback (admin username + password).'
             elif resp.status_code == 404:
-                diagnostics['suggestion'] = f'Tournament slug "{self.slug}" not found. Make sure the tournament exists and the slug is exactly correct (check the URL: /{self.slug}/).'
+                diagnostics['suggestion'] = f'Tournament slug "{self.slug}" not found. Make sure the tournament exists and the slug is exactly correct.'
             else:
-                diagnostics['suggestion'] = f'Unexpected status {resp.status_code}. Check the response preview above.'
+                diagnostics['suggestion'] = f'Unexpected status {resp.status_code}. Check response preview above.'
         except Exception as e:
             diagnostics['steps'].append({
-                'step': 'Tournament institutions endpoint',
+                'step': 'Tournament teams list',
                 'status': 0,
                 'ok': False,
                 'error': str(e)
             })
-            diagnostics['suggestion'] = f'Connection error: {str(e)}. If using Calico, they may block datacenter IPs. Try running this importer locally or use the CSV download mode.'
+            diagnostics['suggestion'] = f'Connection error: {str(e)}. If using Calico, they may block datacenter IPs. Try running locally or use CSV mode.'
         
         return diagnostics
 
+    # -------------------------------------------------------------------------
+    # INSTITUTIONS — GLOBAL ENDPOINT
+    # -------------------------------------------------------------------------
     def create_institution(self, name, code):
+        """Create institution at global /api/v1/institutions (POST allowed here)."""
         if code in self.created_institutions:
             return self.created_institutions[code]
+        
         data = {"name": name, "code": code}
-        result = self._post('/institutions', data)
-        if result and 'id' in result:
-            self.created_institutions[code] = result['id']
-            return result['id']
+        url = self._global_url('/institutions')
+        result = self._request('POST', url, data)
+        
+        if result and 'url' in result:
+            self.created_institutions[code] = result['url']
+            return result['url']
+        elif result and 'id' in result:
+            # Build URL manually if not returned
+            inst_url = f"{self.base_url}/api/v1/institutions/{result['id']}/"
+            self.created_institutions[code] = inst_url
+            return inst_url
         return None
 
-    def create_team(self, institution_id, reference, short_reference,
+    # -------------------------------------------------------------------------
+    # TEAMS — TOURNAMENT ENDPOINT
+    # -------------------------------------------------------------------------
+    def create_team(self, institution_url, reference, short_reference,
                     use_institution_prefix=True, emoji='', speakers=None, code_name=''):
+        """Create team at tournament-scoped endpoint."""
         data = {
-            "institution": institution_id,
+            "institution": institution_url,
             "reference": reference,
             "short_reference": short_reference or reference,
             "use_institution_prefix": use_institution_prefix,
@@ -304,14 +335,20 @@ class TabbycatAPI:
             data["code_name"] = code_name
         if speakers:
             data["speakers"] = speakers
-        return self._post('/teams', data)
+        
+        url = self._tournament_url('/teams')
+        return self._request('POST', url, data)
 
-    def create_adjudicator(self, name, institution_id=None, email='',
+    # -------------------------------------------------------------------------
+    # ADJUDICATORS — TOURNAMENT ENDPOINT
+    # -------------------------------------------------------------------------
+    def create_adjudicator(self, name, institution_url=None, email='',
                            gender='', base_score=None, independent=False,
                            adj_core=False, notes=''):
+        """Create adjudicator at tournament-scoped endpoint."""
         data = {"name": name}
-        if institution_id:
-            data["institution"] = institution_id
+        if institution_url:
+            data["institution"] = institution_url
         if email:
             data["email"] = email
         if gender:
@@ -322,16 +359,23 @@ class TabbycatAPI:
         data["adj_core"] = adj_core
         if notes:
             data["notes"] = notes
-        return self._post('/adjudicators', data)
+        
+        url = self._tournament_url('/adjudicators')
+        return self._request('POST', url, data)
 
+    # -------------------------------------------------------------------------
+    # SPEAKERS — TOURNAMENT ENDPOINT (fallback)
+    # -------------------------------------------------------------------------
     def create_speaker(self, team_id, name, email='', gender=''):
-        """Fallback: create speaker separately if nested creation fails."""
+        """Create speaker at tournament-scoped endpoint."""
         data = {"name": name, "team": team_id}
         if email:
             data["email"] = email
         if gender:
             data["gender"] = gender
-        return self._post('/speakers', data)
+        
+        url = self._tournament_url('/speakers')
+        return self._request('POST', url, data)
 
 
 # =============================================================================
@@ -419,10 +463,6 @@ def process_teams(rows):
 
 
 def process_speakers(rows, max_speakers=None):
-    """
-    Process speakers. max_speakers limits how many speakers per team.
-    max_speakers=2 for BP, max_speakers=3 for 3v3, None for unlimited.
-    """
     results = []
     errors = []
     for idx, row in enumerate(rows, start=2):
@@ -541,9 +581,7 @@ def test_connection():
 
 @app.route('/api-diagnose', methods=['POST'])
 def api_diagnose():
-    """
-    Deep diagnostic endpoint. Tries multiple URL patterns and reports back.
-    """
+    """Deep diagnostic: tries multiple URL patterns."""
     data = request.get_json()
     base_url = data.get('base_url', '').rstrip('/')
     token = data.get('token', '').strip()
@@ -552,34 +590,37 @@ def api_diagnose():
     results = []
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'TabbycatImporter/3.1 (Diagnostic)',
+        'User-Agent': 'TabbycatImporter/3.2 (Diagnostic)',
         'Accept': 'application/json'
     })
     if token:
         session.headers['Authorization'] = f'Token {token}'
     
     paths_to_try = [
-        '/api/v1/tournaments/{slug}/institutions',
-        '/api/v1/tournaments/{slug}/institutions/',
-        '/api/tournaments/{slug}/institutions',
-        '/api/tournaments/{slug}/institutions/',
-        '/api/v1/',
-        '/api/',
+        ('GET', '/api/v1/institutions'),
+        ('GET', f'/api/v1/tournaments/{slug}/institutions'),
+        ('GET', f'/api/v1/tournaments/{slug}/teams'),
+        ('GET', f'/api/v1/tournaments/{slug}/adjudicators'),
+        ('GET', '/api/v1/'),
+        ('GET', '/api/'),
     ]
     
-    for path_template in paths_to_try:
-        path = path_template.format(slug=slug)
+    for method, path in paths_to_try:
         url = f"{base_url}{path}"
         try:
-            resp = session.get(url, timeout=10)
+            if method == 'GET':
+                resp = session.get(url, timeout=10)
+            else:
+                resp = session.post(url, json={'test': 'data'}, timeout=10)
             results.append({
+                'method': method,
                 'url': url,
                 'status': resp.status_code,
-                'body_preview': resp.text[:150] if resp.text else '(empty)',
-                'headers': dict(resp.headers) if resp.headers else {}
+                'body_preview': resp.text[:150] if resp.text else '(empty)'
             })
         except Exception as e:
             results.append({
+                'method': method,
                 'url': url,
                 'status': 0,
                 'error': str(e)
@@ -655,9 +696,11 @@ def upload():
                     flash(f"  {step['step']}: HTTP {step.get('status', 'ERR')}", 'info')
                 return redirect(url_for('index'))
 
+            # Step 1: Create institutions (GLOBAL endpoint)
             for inst in institutions:
                 api.create_institution(inst['name'], inst['code'])
 
+            # Step 2: Build speakers by team
             speakers_by_team = {}
             if speakers:
                 for spk in speakers:
@@ -672,13 +715,15 @@ def upload():
                     spk_data["anonymous"] = spk['anonymous']
                     speakers_by_team[t].append(spk_data)
 
+            # Step 3: Create teams (TOURNAMENT endpoint)
+            created_teams = {}  # team_name -> team_id
             for team in teams:
-                inst_id = api.created_institutions.get(team['institution'])
+                inst_url = api.created_institutions.get(team['institution'])
                 team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
                 team_speakers = speakers_by_team.get(team_name, [])
                 
                 result = api.create_team(
-                    institution_id=inst_id,
+                    institution_url=inst_url,
                     reference=team['reference'],
                     short_reference=team['short_reference'],
                     use_institution_prefix=team['use_institution_prefix'],
@@ -687,16 +732,21 @@ def upload():
                     speakers=team_speakers if team_speakers else None
                 )
                 
+                if result and 'id' in result:
+                    created_teams[team_name] = result['id']
+                
+                # Fallback: if team created but speakers failed, create speakers separately
                 if result and team_speakers and 'id' in result:
                     team_id = result['id']
                     for spk in team_speakers:
                         api.create_speaker(team_id, spk['name'], spk.get('email', ''), spk.get('gender', ''))
 
+            # Step 4: Create adjudicators (TOURNAMENT endpoint)
             for adj in adjudicators:
-                inst_id = api.created_institutions.get(adj['institution']) if adj['institution'] else None
+                inst_url = api.created_institutions.get(adj['institution']) if adj['institution'] else None
                 api.create_adjudicator(
                     name=adj['name'],
-                    institution_id=inst_id,
+                    institution_url=inst_url,
                     email=adj['email'],
                     gender=adj['gender'],
                     base_score=adj['base_score'],
@@ -707,6 +757,7 @@ def upload():
 
             api_results = api.stats
 
+        # Generate CSVs for download mode
         inst_csv = generate_institutions_csv(institutions)
         adj_csv = generate_adjudicators_csv(adjudicators)
         teams_csv = generate_teams_csv(teams)
