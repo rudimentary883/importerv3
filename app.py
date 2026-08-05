@@ -1,5 +1,5 @@
 """
-Tabbycat API Importer v3.3 — FIXED: Adjudicator conflicts fields required
+Tabbycat API Importer v3.4 — FIXED: Speaker categories required in nested team creation
 """
 
 import os
@@ -73,20 +73,10 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT (v3.3)
+# TABBYCAT API CLIENT (v3.4)
 # =============================================================================
 
 class TabbycatAPI:
-    """
-    Tabbycat API Client with correct endpoint routing.
-    
-    ENDPOINTS:
-      Global:    POST /api/v1/institutions
-      Tournament POST /api/v1/tournaments/{slug}/teams
-      Tournament POST /api/v1/tournaments/{slug}/adjudicators
-      Tournament POST /api/v1/tournaments/{slug}/speakers
-    """
-
     def __init__(self, base_url, token, tournament_slug, username=None, password=None):
         self.base_url = base_url.rstrip('/')
         self.token = token.strip() if token else ''
@@ -95,11 +85,11 @@ class TabbycatAPI:
         self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'TabbycatImporter/3.3 (Render; Python requests)',
+            'User-Agent': 'TabbycatImporter/3.4 (Render; Python requests)',
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
-        self.created_institutions = {}  # code -> full API URL
+        self.created_institutions = {}
         self.stats = {'success': 0, 'failed': 0, 'errors': []}
         self.auth_method = None
         self._authenticate()
@@ -257,7 +247,7 @@ class TabbycatAPI:
                 diagnostics['ok'] = True
                 diagnostics['suggestion'] = 'Connection successful! API is working.'
             elif resp.status_code == 401:
-                diagnostics['suggestion'] = 'Token is invalid or expired. Get a new token from your Tabbycat Change Password page. If that fails, try providing your admin username and password for session auth.'
+                diagnostics['suggestion'] = 'Token is invalid or expired. Get a new token from your Tabbycat Change Password page.'
             elif resp.status_code == 403:
                 diagnostics['suggestion'] = 'Access forbidden. Try Session Auth Fallback (admin username + password).'
             elif resp.status_code == 404:
@@ -275,9 +265,6 @@ class TabbycatAPI:
         
         return diagnostics
 
-    # -------------------------------------------------------------------------
-    # INSTITUTIONS — GLOBAL ENDPOINT
-    # -------------------------------------------------------------------------
     def create_institution(self, name, code):
         if code in self.created_institutions:
             return self.created_institutions[code]
@@ -295,9 +282,6 @@ class TabbycatAPI:
             return inst_url
         return None
 
-    # -------------------------------------------------------------------------
-    # TEAMS — TOURNAMENT ENDPOINT
-    # -------------------------------------------------------------------------
     def create_team(self, institution_url, reference, short_reference,
                     use_institution_prefix=True, emoji='', speakers=None, code_name=''):
         data = {
@@ -316,29 +300,18 @@ class TabbycatAPI:
         url = self._tournament_url('/teams')
         return self._request('POST', url, data)
 
-    # -------------------------------------------------------------------------
-    # ADJUDICATORS — TOURNAMENT ENDPOINT
-    # -------------------------------------------------------------------------
     def create_adjudicator(self, name, institution_url=None, email='',
                            gender='', base_score=None, independent=False,
                            adj_core=False, notes=''):
-        """
-        CRITICAL FIX: Tabbycat's AdjudicatorSerializer requires these M2M fields
-        to be explicitly present as empty arrays, even if no conflicts exist.
-        The 'institution' field must also be explicitly present (as null for 
-        independent adjudicators) rather than omitted.
-        """
         data = {
             "name": name,
             "independent": independent,
             "adj_core": adj_core,
-            # These three fields are REQUIRED by the serializer even when empty:
             "institution_conflicts": [],
             "team_conflicts": [],
             "adjudicator_conflicts": [],
         }
         
-        # Institution must be explicitly present — null for independent, URL otherwise
         if institution_url:
             data["institution"] = institution_url
         else:
@@ -356,11 +329,12 @@ class TabbycatAPI:
         url = self._tournament_url('/adjudicators')
         return self._request('POST', url, data)
 
-    # -------------------------------------------------------------------------
-    # SPEAKERS — TOURNAMENT ENDPOINT (fallback)
-    # -------------------------------------------------------------------------
     def create_speaker(self, team_id, name, email='', gender=''):
-        data = {"name": name, "team": team_id}
+        data = {
+            "name": name,
+            "team": team_id,
+            "categories": [],  # Required by Tabbycat API
+        }
         if email:
             data["email"] = email
         if gender:
@@ -581,7 +555,7 @@ def api_diagnose():
     results = []
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'TabbycatImporter/3.3 (Diagnostic)',
+        'User-Agent': 'TabbycatImporter/3.4 (Diagnostic)',
         'Accept': 'application/json'
     })
     if token:
@@ -692,13 +666,18 @@ def upload():
                 api.create_institution(inst['name'], inst['code'])
 
             # Step 2: Build speakers by team
+            # CRITICAL FIX v3.4: Every speaker MUST include "categories": []
+            # because Tabbycat's nested Speaker serializer requires it.
             speakers_by_team = {}
             if speakers:
                 for spk in speakers:
                     t = spk['team']
                     if t not in speakers_by_team:
                         speakers_by_team[t] = []
-                    spk_data = {"name": spk['name']}
+                    spk_data = {
+                        "name": spk['name'],
+                        "categories": [],  # REQUIRED by Tabbycat API
+                    }
                     if spk['email']:
                         spk_data["email"] = spk['email']
                     if spk['gender']:
@@ -726,6 +705,7 @@ def upload():
                 if result and 'id' in result:
                     created_teams[team_name] = result['id']
                 
+                # Fallback: create speakers separately if nested failed
                 if result and team_speakers and 'id' in result:
                     team_id = result['id']
                     for spk in team_speakers:
@@ -747,6 +727,7 @@ def upload():
 
             api_results = api.stats
 
+        # Generate CSVs for download mode
         inst_csv = generate_institutions_csv(institutions)
         adj_csv = generate_adjudicators_csv(adjudicators)
         teams_csv = generate_teams_csv(teams)
