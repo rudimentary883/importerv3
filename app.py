@@ -1,5 +1,5 @@
 """
-Tabbycat API Importer v3.5 — FIXED: Speaker team field requires full URL, not raw ID
+Tabbycat API Importer v3.6 — FIXED: Speaker team URLs & category support
 """
 
 import os
@@ -73,7 +73,7 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT (v3.5)
+# TABBYCAT API CLIENT (v3.6)
 # =============================================================================
 
 class TabbycatAPI:
@@ -85,7 +85,7 @@ class TabbycatAPI:
         self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'TabbycatImporter/3.5 (Render; Python requests)',
+            'User-Agent': 'TabbycatImporter/3.6 (Render; Python requests)',
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
@@ -100,13 +100,13 @@ class TabbycatAPI:
             if self._test_auth():
                 self.auth_method = 'token'
                 return
-        
+
         if self.username and self.password:
             self.session.headers.pop('Authorization', None)
             if self._login_session():
                 self.auth_method = 'session'
                 return
-        
+
         if self.token:
             self.session.headers['Authorization'] = f'Token {self.token}'
 
@@ -116,7 +116,7 @@ class TabbycatAPI:
             resp = self.session.get(login_url, timeout=15)
             csrf_match = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', resp.text)
             csrf_token = csrf_match.group(1) if csrf_match else ''
-            
+
             login_data = {
                 'username': self.username,
                 'password': self.password,
@@ -124,7 +124,7 @@ class TabbycatAPI:
                 'next': '/'
             }
             resp = self.session.post(login_url, data=login_data, timeout=15)
-            
+
             test_url = f"{self.base_url}/database/"
             resp = self.session.get(test_url, timeout=15)
             return resp.status_code == 200
@@ -153,7 +153,7 @@ class TabbycatAPI:
                     resp = self.session.post(url, json=data, timeout=30)
                 else:
                     resp = self.session.get(url, timeout=30)
-                
+
                 if resp.status_code in (200, 201):
                     self.stats['success'] += 1
                     return resp.json()
@@ -181,7 +181,7 @@ class TabbycatAPI:
             'steps': [],
             'suggestion': ''
         }
-        
+
         try:
             resp = self.session.get(self.base_url, timeout=10, allow_redirects=True)
             diagnostics['steps'].append({
@@ -198,7 +198,7 @@ class TabbycatAPI:
             })
             diagnostics['suggestion'] = 'Cannot reach your Tabbycat URL. Check for typos.'
             return diagnostics
-        
+
         try:
             url = f"{self.base_url}/api/v1/institutions"
             resp = self.session.get(url, timeout=10)
@@ -215,7 +215,7 @@ class TabbycatAPI:
                 'ok': False,
                 'error': str(e)
             })
-        
+
         try:
             url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
             resp = self.session.get(url, timeout=10)
@@ -232,7 +232,7 @@ class TabbycatAPI:
                 'ok': False,
                 'error': str(e)
             })
-        
+
         try:
             url = f"{self.base_url}/api/v1/tournaments/{self.slug}/teams"
             resp = self.session.get(url, timeout=10)
@@ -242,7 +242,7 @@ class TabbycatAPI:
                 'ok': resp.status_code in (200, 401),
                 'body_preview': resp.text[:100] if resp.text else ''
             })
-            
+
             if resp.status_code == 200:
                 diagnostics['ok'] = True
                 diagnostics['suggestion'] = 'Connection successful! API is working.'
@@ -262,17 +262,17 @@ class TabbycatAPI:
                 'error': str(e)
             })
             diagnostics['suggestion'] = f'Connection error: {str(e)}.'
-        
+
         return diagnostics
 
     def create_institution(self, name, code):
         if code in self.created_institutions:
             return self.created_institutions[code]
-        
+
         data = {"name": name, "code": code}
         url = self._global_url('/institutions')
         result = self._request('POST', url, data)
-        
+
         if result and 'url' in result:
             self.created_institutions[code] = result['url']
             return result['url']
@@ -296,7 +296,7 @@ class TabbycatAPI:
             data["code_name"] = code_name
         if speakers:
             data["speakers"] = speakers
-        
+
         url = self._tournament_url('/teams')
         return self._request('POST', url, data)
 
@@ -311,12 +311,12 @@ class TabbycatAPI:
             "team_conflicts": [],
             "adjudicator_conflicts": [],
         }
-        
+
         if institution_url:
             data["institution"] = institution_url
         else:
             data["institution"] = None
-        
+
         if email:
             data["email"] = email
         if gender:
@@ -325,26 +325,41 @@ class TabbycatAPI:
             data["base_score"] = base_score
         if notes:
             data["notes"] = notes
-        
+
         url = self._tournament_url('/adjudicators')
         return self._request('POST', url, data)
 
-    def create_speaker(self, team_id, name, email='', gender=''):
+    def get_speaker_categories(self):
+        """Fetch existing speaker categories for the tournament."""
+        url = self._tournament_url('/speaker-categories')
+        return self._request('GET', url)
+
+    def create_speaker_category(self, name):
+        """Create a new speaker category."""
+        data = {"name": name}
+        url = self._tournament_url('/speaker-categories')
+        return self._request('POST', url, data)
+
+    def create_speaker(self, team_url, name, email='', gender='', categories=None):
         """
-        CRITICAL FIX v3.5: Tabbycat expects the 'team' field as a full URL,
-        not a raw integer ID. Build the team URL from the team_id.
+        v3.6 FIXES:
+        - team_url: accepts the full team URL directly (stripped of trailing slashes
+          to avoid DRF hyperlink resolver issues).
+        - categories: accepts a list of category URLs to assign to the speaker.
         """
-        team_url = f"{self.base_url}/api/v1/tournaments/{self.slug}/teams/{team_id}/"
+        # Strip trailing slashes to prevent DRF "Invalid hyperlink" errors
+        team_url = team_url.rstrip('/') if team_url else team_url
+
         data = {
             "name": name,
             "team": team_url,
-            "categories": [],
+            "categories": list(categories) if categories else [],
         }
         if email:
             data["email"] = email
         if gender:
             data["gender"] = gender
-        
+
         url = self._tournament_url('/speakers')
         return self._request('POST', url, data)
 
@@ -458,7 +473,7 @@ def process_speakers(rows, max_speakers=None):
             'categories': clean_string(row.get('categories', '')),
             'initials_match': clean_string(row.get('initials_match', ''))
         })
-    
+
     if max_speakers and max_speakers > 0:
         team_counts = {}
         filtered = []
@@ -470,7 +485,7 @@ def process_speakers(rows, max_speakers=None):
             elif team_counts[team] == max_speakers + 1:
                 errors.append(f"Team '{team}': Only first {max_speakers} speakers imported (BP format). Skipped extra speakers.")
         results = filtered
-    
+
     return results, errors
 
 
@@ -518,11 +533,12 @@ def generate_teams_csv(teams):
 def generate_speakers_csv(speakers):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['team', 'name', 'email', 'phone', 'gender', 'anonymous'])
+    writer.writerow(['team', 'name', 'email', 'phone', 'gender', 'anonymous', 'categories'])
     for spk in speakers:
         writer.writerow([
             spk['team'], spk['name'], spk['email'], spk['phone'],
-            spk['gender'], 'TRUE' if spk['anonymous'] else 'FALSE'
+            spk['gender'], 'TRUE' if spk['anonymous'] else 'FALSE',
+            spk.get('categories', '')
         ])
     return output.getvalue()
 
@@ -556,16 +572,16 @@ def api_diagnose():
     base_url = data.get('base_url', '').rstrip('/')
     token = data.get('token', '').strip()
     slug = data.get('slug', '').strip('/')
-    
+
     results = []
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'TabbycatImporter/3.5 (Diagnostic)',
+        'User-Agent': 'TabbycatImporter/3.6 (Diagnostic)',
         'Accept': 'application/json'
     })
     if token:
         session.headers['Authorization'] = f'Token {token}'
-    
+
     paths_to_try = [
         ('GET', '/api/v1/institutions'),
         ('GET', f'/api/v1/tournaments/{slug}/institutions'),
@@ -574,7 +590,7 @@ def api_diagnose():
         ('GET', '/api/v1/'),
         ('GET', '/api/'),
     ]
-    
+
     for method, path in paths_to_try:
         url = f"{base_url}{path}"
         try:
@@ -595,7 +611,7 @@ def api_diagnose():
                 'status': 0,
                 'error': str(e)
             })
-    
+
     return jsonify({'results': results})
 
 
@@ -659,7 +675,7 @@ def upload():
 
             api = TabbycatAPI(base_url, token, slug, username=username, password=password)
             diagnostics = api.test_connection()
-            
+
             if not diagnostics['ok']:
                 flash(f"API Connection Failed: {diagnostics['suggestion']}", 'error')
                 for step in diagnostics['steps']:
@@ -670,31 +686,13 @@ def upload():
             for inst in institutions:
                 api.create_institution(inst['name'], inst['code'])
 
-            # Step 2: Build speakers by team
-            speakers_by_team = {}
-            if speakers:
-                for spk in speakers:
-                    t = spk['team']
-                    if t not in speakers_by_team:
-                        speakers_by_team[t] = []
-                    spk_data = {
-                        "name": spk['name'],
-                        "categories": [],
-                    }
-                    if spk['email']:
-                        spk_data["email"] = spk['email']
-                    if spk['gender']:
-                        spk_data["gender"] = spk['gender']
-                    spk_data["anonymous"] = spk['anonymous']
-                    speakers_by_team[t].append(spk_data)
-
-            # Step 3: Create teams (TOURNAMENT endpoint)
-            created_teams = {}
+            # Step 2: Create teams (TOURNAMENT endpoint)
+            # v3.6: Store team URLs to avoid DRF hyperlink mismatches.
+            created_teams = {}  # team_name -> team_url
             for team in teams:
                 inst_url = api.created_institutions.get(team['institution'])
                 team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
-                team_speakers = speakers_by_team.get(team_name, [])
-                
+
                 result = api.create_team(
                     institution_url=inst_url,
                     reference=team['reference'],
@@ -702,19 +700,75 @@ def upload():
                     use_institution_prefix=team['use_institution_prefix'],
                     emoji=team['emoji'],
                     code_name=team['code_name'],
-                    speakers=team_speakers if team_speakers else None
+                    speakers=None  # v3.6: create speakers separately to support categories
                 )
-                
-                if result and 'id' in result:
-                    created_teams[team_name] = result['id']
-                
-                # Fallback: create speakers separately if nested failed
-                if result and team_speakers and 'id' in result:
-                    team_id = result['id']
-                    for spk in team_speakers:
-                        api.create_speaker(team_id, spk['name'], spk.get('email', ''), spk.get('gender', ''))
 
-            # Step 4: Create adjudicators (TOURNAMENT endpoint)
+                if result and 'id' in result:
+                    team_id = result['id']
+                    # Prefer API-returned URL; strip trailing slashes for DRF safety
+                    team_url = result.get('url', '').rstrip('/')
+                    if not team_url:
+                        team_url = f"{api.base_url}/api/v1/tournaments/{api.slug}/teams/{team_id}"
+                    created_teams[team_name] = team_url
+
+            # Step 3: Fetch / create speaker categories
+            category_map = {}  # category_name -> category_url
+            if speakers:
+                existing_cats = api.get_speaker_categories()
+                if isinstance(existing_cats, list):
+                    for cat in existing_cats:
+                        if isinstance(cat, dict) and 'name' in cat:
+                            cat_url = cat.get('url', '').rstrip('/')
+                            if not cat_url and 'id' in cat:
+                                cat_url = f"{api.base_url}/api/v1/tournaments/{api.slug}/speaker-categories/{cat['id']}"
+                            category_map[cat['name']] = cat_url
+
+                    # Determine which categories need to be created
+                    needed_cats = set()
+                    for spk in speakers:
+                        cat_str = spk.get('categories', '')
+                        if cat_str:
+                            for cat_name in [c.strip() for c in cat_str.split(',')]:
+                                if cat_name and cat_name not in category_map:
+                                    needed_cats.add(cat_name)
+
+                    for cat_name in needed_cats:
+                        result = api.create_speaker_category(cat_name)
+                        if result:
+                            cat_url = result.get('url', '').rstrip('/')
+                            if not cat_url and 'id' in result:
+                                cat_url = f"{api.base_url}/api/v1/tournaments/{api.slug}/speaker-categories/{result['id']}"
+                            category_map[cat_name] = cat_url
+
+            # Step 4: Create speakers separately with proper team URLs & categories
+            if speakers:
+                for spk in speakers:
+                    team_name = spk['team']
+                    team_url = created_teams.get(team_name)
+                    if not team_url:
+                        api.stats['errors'].append(
+                            f"Speaker '{spk['name']}': team '{team_name}' not found"
+                        )
+                        api.stats['failed'] += 1
+                        continue
+
+                    # Build category URL list
+                    cat_urls = []
+                    cat_str = spk.get('categories', '')
+                    if cat_str:
+                        for cat_name in [c.strip() for c in cat_str.split(',')]:
+                            if cat_name in category_map:
+                                cat_urls.append(category_map[cat_name])
+
+                    api.create_speaker(
+                        team_url=team_url,
+                        name=spk['name'],
+                        email=spk.get('email', ''),
+                        gender=spk.get('gender', ''),
+                        categories=cat_urls
+                    )
+
+            # Step 5: Create adjudicators (TOURNAMENT endpoint)
             for adj in adjudicators:
                 inst_url = api.created_institutions.get(adj['institution']) if adj['institution'] else None
                 api.create_adjudicator(
@@ -742,21 +796,21 @@ def upload():
         session['speakers_csv'] = speakers_csv
 
         return render_template('results.html',
-            institutions=institutions,
-            inst_errors=inst_errors,
-            adjudicators=adjudicators,
-            adj_errors=adj_errors,
-            teams=teams,
-            team_errors=team_errors,
-            speakers=speakers,
-            speaker_errors=speaker_errors,
-            inst_count=len(institutions),
-            adj_count=len(adjudicators),
-            team_count=len(teams),
-            speaker_count=len(speakers),
-            mode=mode,
-            debate_format=debate_format,
-            api_results=api_results)
+                               institutions=institutions,
+                               inst_errors=inst_errors,
+                               adjudicators=adjudicators,
+                               adj_errors=adj_errors,
+                               teams=teams,
+                               team_errors=team_errors,
+                               speakers=speakers,
+                               speaker_errors=speaker_errors,
+                               inst_count=len(institutions),
+                               adj_count=len(adjudicators),
+                               team_count=len(teams),
+                               speaker_count=len(speakers),
+                               mode=mode,
+                               debate_format=debate_format,
+                               api_results=api_results)
 
     except Exception as e:
         flash(f'Error: {str(e)}', 'error')
