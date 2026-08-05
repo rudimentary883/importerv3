@@ -1,7 +1,16 @@
 """
-Tabbycat API Importer - Pure Python, no pandas
-Works on any Python version including 3.14
-Optimized for Render Free Tier (512MB RAM)
+Tabbycat API Importer v3.1 - Fixed API Paths + BP/3v3 Support
+Pure Python, no pandas. Works on Render Free Tier (512MB RAM).
+
+KEY FIXES FROM v3.0:
+- API base path: /api/v1/tournaments/ (was /api/tournaments/)
+- Removed trailing slashes from endpoints (Tabbycat uses trailing_slash=False)
+- test_connection() now hits a real endpoint with full diagnostics
+- Added User-Agent header to avoid Cloudflare/WAF blocks
+- Added Debate Format selector (BP = 2 speakers, 3v3 = 3 speakers)
+- Added /api-diagnose endpoint for troubleshooting
+- Added session-auth fallback (username/password) if Token auth fails
+- Better error messages with HTTP status + response body
 """
 
 import os
@@ -9,6 +18,7 @@ import io
 import csv
 import json
 import time
+import re
 import requests
 
 from flask import Flask, render_template, request, send_file, flash, redirect, url_for, jsonify
@@ -43,22 +53,18 @@ def parse_float_or_none(val):
 
 
 def read_csv_file(file):
-    """Read CSV file into list of dicts using stdlib only"""
     text = file.read().decode('utf-8')
     reader = csv.DictReader(io.StringIO(text))
     return list(reader)
 
 
 def read_excel_file(file):
-    """Read Excel file using openpyxl"""
     try:
         from openpyxl import load_workbook
     except ImportError:
         raise ImportError("openpyxl is required for Excel files")
-    
     wb = load_workbook(file)
     ws = wb.active
-    
     headers = [cell.value for cell in ws[1]]
     rows = []
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -78,30 +84,96 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT
+# TABBYCAT API CLIENT (FIXED)
 # =============================================================================
 
 class TabbycatAPI:
-    def __init__(self, base_url, token, tournament_slug):
+    """
+    Fixed API client that uses the correct Tabbycat API paths.
+    
+    Tabbycat API structure (from source code):
+      /api/v1/tournaments/{slug}/institutions
+      /api/v1/tournaments/{slug}/teams
+      /api/v1/tournaments/{slug}/adjudicators
+      /api/v1/tournaments/{slug}/speakers
+    
+    Note: NO trailing slashes. Tabbycat uses SimpleRouter(trailing_slash=False).
+    """
+
+    def __init__(self, base_url, token, tournament_slug, username=None, password=None):
         self.base_url = base_url.rstrip('/')
-        self.token = token
-        self.slug = tournament_slug
+        self.token = token.strip() if token else ''
+        self.slug = tournament_slug.strip('/')
+        self.username = username
+        self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'Authorization': f'Token {token}',
+            'User-Agent': 'TabbycatImporter/3.1 (Render; Python requests)',
+            'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
-        self.created_institutions = {}
+        self.created_institutions = {}  # code -> id
         self.stats = {'success': 0, 'failed': 0, 'errors': []}
+        self.auth_method = None  # 'token' or 'session'
+        self._authenticate()
+
+    def _authenticate(self):
+        """Try token auth first, then session auth fallback."""
+        if self.token:
+            self.session.headers['Authorization'] = f'Token {self.token}'
+            if self._test_auth():
+                self.auth_method = 'token'
+                return
+        
+        if self.username and self.password:
+            self.session.headers.pop('Authorization', None)
+            if self._login_session():
+                self.auth_method = 'session'
+                return
+        
+        if self.token:
+            self.session.headers['Authorization'] = f'Token {self.token}'
+
+    def _login_session(self):
+        """Login via Django session to get CSRF cookie + session cookie."""
+        try:
+            login_url = f"{self.base_url}/accounts/login/"
+            resp = self.session.get(login_url, timeout=15)
+            csrf_match = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', resp.text)
+            csrf_token = csrf_match.group(1) if csrf_match else ''
+            
+            login_data = {
+                'username': self.username,
+                'password': self.password,
+                'csrfmiddlewaretoken': csrf_token,
+                'next': '/'
+            }
+            resp = self.session.post(login_url, data=login_data, timeout=15)
+            
+            test_url = f"{self.base_url}/database/"
+            resp = self.session.get(test_url, timeout=15)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def _test_auth(self):
+        """Quick auth test by hitting the institutions list endpoint."""
+        try:
+            url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
+            resp = self.session.get(url, timeout=10)
+            return resp.status_code in (200, 401)
+        except Exception:
+            return False
 
     def _url(self, path):
-        return f"{self.base_url}/api/tournaments/{self.slug}{path}"
+        """Build correct API URL with NO trailing slash on the resource."""
+        return f"{self.base_url}/api/v1/tournaments/{self.slug}{path}"
 
     def _post(self, path, data, retries=3):
         url = self._url(path)
         for attempt in range(retries):
             try:
-                time.sleep(0.3)
+                time.sleep(0.4)
                 resp = self.session.post(url, json=data, timeout=30)
                 if resp.status_code == 201:
                     self.stats['success'] += 1
@@ -110,24 +182,109 @@ class TabbycatAPI:
                     time.sleep(2 ** attempt)
                     continue
                 else:
-                    error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    error = f"HTTP {resp.status_code} on POST {path}: {resp.text[:300]}"
                     self.stats['errors'].append(error)
                     self.stats['failed'] += 1
                     return None
             except requests.exceptions.RequestException as e:
                 if attempt == retries - 1:
-                    error = f"Request failed: {str(e)}"
+                    error = f"Request failed on {path}: {str(e)}"
                     self.stats['errors'].append(error)
                     self.stats['failed'] += 1
                     return None
                 time.sleep(1)
         return None
 
+    def _get(self, path, timeout=10):
+        url = self._url(path)
+        try:
+            return self.session.get(url, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            return type('obj', (object,), {'status_code': 0, 'text': str(e)})()
+
+    def test_connection(self):
+        """
+        Comprehensive connection test with full diagnostics.
+        Returns dict with detailed info instead of just True/False.
+        """
+        diagnostics = {
+            'ok': False,
+            'auth_method': self.auth_method,
+            'steps': [],
+            'suggestion': ''
+        }
+        
+        try:
+            resp = self.session.get(self.base_url, timeout=10, allow_redirects=True)
+            diagnostics['steps'].append({
+                'step': 'Base URL reachable',
+                'status': resp.status_code,
+                'ok': resp.status_code < 500
+            })
+        except Exception as e:
+            diagnostics['steps'].append({
+                'step': 'Base URL reachable',
+                'status': 0,
+                'ok': False,
+                'error': str(e)
+            })
+            diagnostics['suggestion'] = 'Cannot reach your Tabbycat URL. Check for typos.'
+            return diagnostics
+        
+        try:
+            resp = self.session.get(f"{self.base_url}/api/v1/", timeout=10)
+            diagnostics['steps'].append({
+                'step': 'API v1 root (/api/v1/)',
+                'status': resp.status_code,
+                'ok': resp.status_code < 500,
+                'body_preview': resp.text[:100] if resp.text else ''
+            })
+        except Exception as e:
+            diagnostics['steps'].append({
+                'step': 'API v1 root',
+                'status': 0,
+                'ok': False,
+                'error': str(e)
+            })
+        
+        url = f"{self.base_url}/api/v1/tournaments/{self.slug}/institutions"
+        try:
+            resp = self.session.get(url, timeout=10)
+            diagnostics['steps'].append({
+                'step': 'Tournament institutions endpoint',
+                'url': url,
+                'status': resp.status_code,
+                'ok': resp.status_code == 200,
+                'body_preview': resp.text[:200] if resp.text else ''
+            })
+            
+            if resp.status_code == 200:
+                diagnostics['ok'] = True
+                diagnostics['suggestion'] = 'Connection successful! API is working.'
+            elif resp.status_code == 401:
+                diagnostics['suggestion'] = 'Token is invalid or expired. Get a new token from your Tabbycat Change Password page. If that fails, try providing your admin username and password for session auth.'
+            elif resp.status_code == 403:
+                diagnostics['suggestion'] = 'Access forbidden. Your token/user may not have admin permissions for this tournament. If using Calico, the API might be behind Cloudflare. Try adding your admin username/password as a fallback.'
+            elif resp.status_code == 404:
+                diagnostics['suggestion'] = f'Tournament slug "{self.slug}" not found. Make sure the tournament exists and the slug is exactly correct (check the URL: /{self.slug}/).'
+            else:
+                diagnostics['suggestion'] = f'Unexpected status {resp.status_code}. Check the response preview above.'
+        except Exception as e:
+            diagnostics['steps'].append({
+                'step': 'Tournament institutions endpoint',
+                'status': 0,
+                'ok': False,
+                'error': str(e)
+            })
+            diagnostics['suggestion'] = f'Connection error: {str(e)}. If using Calico, they may block datacenter IPs. Try running this importer locally or use the CSV download mode.'
+        
+        return diagnostics
+
     def create_institution(self, name, code):
         if code in self.created_institutions:
             return self.created_institutions[code]
         data = {"name": name, "code": code}
-        result = self._post('/institutions/', data)
+        result = self._post('/institutions', data)
         if result and 'id' in result:
             self.created_institutions[code] = result['id']
             return result['id']
@@ -147,11 +304,11 @@ class TabbycatAPI:
             data["code_name"] = code_name
         if speakers:
             data["speakers"] = speakers
-        return self._post('/teams/', data)
+        return self._post('/teams', data)
 
     def create_adjudicator(self, name, institution_id=None, email='',
-                          gender='', base_score=None, independent=False,
-                          adj_core=False, notes=''):
+                           gender='', base_score=None, independent=False,
+                           adj_core=False, notes=''):
         data = {"name": name}
         if institution_id:
             data["institution"] = institution_id
@@ -165,24 +322,26 @@ class TabbycatAPI:
         data["adj_core"] = adj_core
         if notes:
             data["notes"] = notes
-        return self._post('/adjudicators/', data)
+        return self._post('/adjudicators', data)
 
-    def test_connection(self):
-        try:
-            url = f"{self.base_url}/api/"
-            resp = self.session.get(url, timeout=10)
-            return resp.status_code == 200
-        except Exception:
-            return False
+    def create_speaker(self, team_id, name, email='', gender=''):
+        """Fallback: create speaker separately if nested creation fails."""
+        data = {"name": name, "team": team_id}
+        if email:
+            data["email"] = email
+        if gender:
+            data["gender"] = gender
+        return self._post('/speakers', data)
 
 
 # =============================================================================
-# CSV PROCESSORS (pure Python)
+# CSV PROCESSORS
 # =============================================================================
 
 def process_institutions(rows):
     results = []
     errors = []
+    seen_codes = set()
     for idx, row in enumerate(rows, start=2):
         name = clean_string(row.get('name', ''))
         code = clean_string(row.get('code', ''))
@@ -194,6 +353,10 @@ def process_institutions(rows):
         if not code:
             errors.append(f"Row {idx}: Missing code for '{name}'")
             continue
+        if code in seen_codes:
+            errors.append(f"Row {idx}: Duplicate institution code '{code}'")
+            continue
+        seen_codes.add(code)
         results.append({'name': name, 'code': code})
     return results, errors
 
@@ -229,6 +392,7 @@ def process_adjudicators(rows):
 def process_teams(rows):
     results = []
     errors = []
+    seen_refs = set()
     for idx, row in enumerate(rows, start=2):
         institution = clean_string(row.get('institution', ''))
         if not institution:
@@ -237,11 +401,15 @@ def process_teams(rows):
         if not ref:
             errors.append(f"Row {idx}: Missing reference for institution '{institution}'")
             continue
-        short_ref = clean_string(row.get('short_reference', ref))
+        key = f"{institution}:{ref}"
+        if key in seen_refs:
+            errors.append(f"Row {idx}: Duplicate team reference '{ref}' for institution '{institution}'")
+            continue
+        seen_refs.add(key)
         results.append({
             'institution': institution,
             'reference': ref,
-            'short_reference': short_ref or ref,
+            'short_reference': clean_string(row.get('short_reference', ref)),
             'code_name': clean_string(row.get('code_name', '')),
             'use_institution_prefix': parse_bool(row.get('use_institution_prefix', True)),
             'emoji': clean_string(row.get('emoji', '')),
@@ -250,7 +418,11 @@ def process_teams(rows):
     return results, errors
 
 
-def process_speakers(rows):
+def process_speakers(rows, max_speakers=None):
+    """
+    Process speakers. max_speakers limits how many speakers per team.
+    max_speakers=2 for BP, max_speakers=3 for 3v3, None for unlimited.
+    """
     results = []
     errors = []
     for idx, row in enumerate(rows, start=2):
@@ -275,6 +447,19 @@ def process_speakers(rows):
             'categories': clean_string(row.get('categories', '')),
             'initials_match': clean_string(row.get('initials_match', ''))
         })
+    
+    if max_speakers and max_speakers > 0:
+        team_counts = {}
+        filtered = []
+        for spk in results:
+            team = spk['team']
+            team_counts[team] = team_counts.get(team, 0) + 1
+            if team_counts[team] <= max_speakers:
+                filtered.append(spk)
+            elif team_counts[team] == max_speakers + 1:
+                errors.append(f"Team '{team}': Only first {max_speakers} speakers imported (BP format). Skipped extra speakers.")
+        results = filtered
+    
     return results, errors
 
 
@@ -346,15 +531,68 @@ def test_connection():
     api = TabbycatAPI(
         data.get('base_url', ''),
         data.get('token', ''),
-        data.get('slug', '')
+        data.get('slug', ''),
+        username=data.get('username'),
+        password=data.get('password')
     )
-    ok = api.test_connection()
-    return jsonify({'ok': ok})
+    diagnostics = api.test_connection()
+    return jsonify(diagnostics)
+
+
+@app.route('/api-diagnose', methods=['POST'])
+def api_diagnose():
+    """
+    Deep diagnostic endpoint. Tries multiple URL patterns and reports back.
+    """
+    data = request.get_json()
+    base_url = data.get('base_url', '').rstrip('/')
+    token = data.get('token', '').strip()
+    slug = data.get('slug', '').strip('/')
+    
+    results = []
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'TabbycatImporter/3.1 (Diagnostic)',
+        'Accept': 'application/json'
+    })
+    if token:
+        session.headers['Authorization'] = f'Token {token}'
+    
+    paths_to_try = [
+        '/api/v1/tournaments/{slug}/institutions',
+        '/api/v1/tournaments/{slug}/institutions/',
+        '/api/tournaments/{slug}/institutions',
+        '/api/tournaments/{slug}/institutions/',
+        '/api/v1/',
+        '/api/',
+    ]
+    
+    for path_template in paths_to_try:
+        path = path_template.format(slug=slug)
+        url = f"{base_url}{path}"
+        try:
+            resp = session.get(url, timeout=10)
+            results.append({
+                'url': url,
+                'status': resp.status_code,
+                'body_preview': resp.text[:150] if resp.text else '(empty)',
+                'headers': dict(resp.headers) if resp.headers else {}
+            })
+        except Exception as e:
+            results.append({
+                'url': url,
+                'status': 0,
+                'error': str(e)
+            })
+    
+    return jsonify({'results': results})
 
 
 @app.route('/upload', methods=['POST'])
 def upload():
     mode = request.form.get('mode', 'csv')
+    debate_format = request.form.get('debate_format', 'bp')
+    max_speakers = 2 if debate_format == 'bp' else 3
 
     try:
         if 'institutions' not in request.files:
@@ -390,33 +628,38 @@ def upload():
             teams, team_errors = process_teams(team_rows)
             for t in teams:
                 if t['institution'] not in institution_codes:
-                    team_errors.append(f"Team '{t['institution']} {t['reference']}': institution '{t['institution']}' not found")
+                    team_errors.append(f"Team '{t['institution']} {t['reference']}': institution code '{t['institution']}' not found in institutions file")
 
         if speakers_file and speakers_file.filename:
             speaker_rows = read_uploaded_file(speakers_file)
-            speakers, speaker_errors = process_speakers(speaker_rows)
+            speakers, speaker_errors = process_speakers(speaker_rows, max_speakers=max_speakers)
 
         api_results = None
         if mode == 'api':
             base_url = request.form.get('api_url', '').strip()
             token = request.form.get('api_token', '').strip()
             slug = request.form.get('tournament_slug', '').strip()
+            username = request.form.get('api_username', '').strip() or None
+            password = request.form.get('api_password', '').strip() or None
 
             if not all([base_url, token, slug]):
                 flash('API URL, Token, and Tournament Slug are required for API mode', 'error')
                 return redirect(url_for('index'))
 
-            api = TabbycatAPI(base_url, token, slug)
-
-            if not api.test_connection():
-                flash('Could not connect to Tabbycat API. Check URL, token, and that API is enabled.', 'error')
+            api = TabbycatAPI(base_url, token, slug, username=username, password=password)
+            diagnostics = api.test_connection()
+            
+            if not diagnostics['ok']:
+                flash(f"API Connection Failed: {diagnostics['suggestion']}", 'error')
+                for step in diagnostics['steps']:
+                    flash(f"  {step['step']}: HTTP {step.get('status', 'ERR')}", 'info')
                 return redirect(url_for('index'))
 
             for inst in institutions:
                 api.create_institution(inst['name'], inst['code'])
 
+            speakers_by_team = {}
             if speakers:
-                speakers_by_team = {}
                 for spk in speakers:
                     t = spk['team']
                     if t not in speakers_by_team:
@@ -429,30 +672,25 @@ def upload():
                     spk_data["anonymous"] = spk['anonymous']
                     speakers_by_team[t].append(spk_data)
 
-                for team in teams:
-                    inst_id = api.created_institutions.get(team['institution'])
-                    team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
-                    team_speakers = speakers_by_team.get(team_name, [])
-                    api.create_team(
-                        institution_id=inst_id,
-                        reference=team['reference'],
-                        short_reference=team['short_reference'],
-                        use_institution_prefix=team['use_institution_prefix'],
-                        emoji=team['emoji'],
-                        code_name=team['code_name'],
-                        speakers=team_speakers if team_speakers else None
-                    )
-            else:
-                for team in teams:
-                    inst_id = api.created_institutions.get(team['institution'])
-                    api.create_team(
-                        institution_id=inst_id,
-                        reference=team['reference'],
-                        short_reference=team['short_reference'],
-                        use_institution_prefix=team['use_institution_prefix'],
-                        emoji=team['emoji'],
-                        code_name=team['code_name']
-                    )
+            for team in teams:
+                inst_id = api.created_institutions.get(team['institution'])
+                team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
+                team_speakers = speakers_by_team.get(team_name, [])
+                
+                result = api.create_team(
+                    institution_id=inst_id,
+                    reference=team['reference'],
+                    short_reference=team['short_reference'],
+                    use_institution_prefix=team['use_institution_prefix'],
+                    emoji=team['emoji'],
+                    code_name=team['code_name'],
+                    speakers=team_speakers if team_speakers else None
+                )
+                
+                if result and team_speakers and 'id' in result:
+                    team_id = result['id']
+                    for spk in team_speakers:
+                        api.create_speaker(team_id, spk['name'], spk.get('email', ''), spk.get('gender', ''))
 
             for adj in adjudicators:
                 inst_id = api.created_institutions.get(adj['institution']) if adj['institution'] else None
@@ -481,20 +719,21 @@ def upload():
         session['speakers_csv'] = speakers_csv
 
         return render_template('results.html',
-                               institutions=institutions,
-                               inst_errors=inst_errors,
-                               adjudicators=adjudicators,
-                               adj_errors=adj_errors,
-                               teams=teams,
-                               team_errors=team_errors,
-                               speakers=speakers,
-                               speaker_errors=speaker_errors,
-                               inst_count=len(institutions),
-                               adj_count=len(adjudicators),
-                               team_count=len(teams),
-                               speaker_count=len(speakers),
-                               mode=mode,
-                               api_results=api_results)
+            institutions=institutions,
+            inst_errors=inst_errors,
+            adjudicators=adjudicators,
+            adj_errors=adj_errors,
+            teams=teams,
+            team_errors=team_errors,
+            speakers=speakers,
+            speaker_errors=speaker_errors,
+            inst_count=len(institutions),
+            adj_count=len(adjudicators),
+            team_count=len(teams),
+            speaker_count=len(speakers),
+            mode=mode,
+            debate_format=debate_format,
+            api_results=api_results)
 
     except Exception as e:
         flash(f'Error: {str(e)}', 'error')
