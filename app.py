@@ -1,5 +1,5 @@
 """
-Tabbycat API Importer v3.5 — FIXED: Speaker team field requires full URL, not raw ID
+Tabbycat API Importer v3.6 — FIXED: Remove trailing slashes from all hyperlinked URLs
 """
 
 import os
@@ -73,7 +73,7 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT (v3.5)
+# TABBYCAT API CLIENT (v3.6)
 # =============================================================================
 
 class TabbycatAPI:
@@ -85,11 +85,12 @@ class TabbycatAPI:
         self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'TabbycatImporter/3.5 (Render; Python requests)',
+            'User-Agent': 'TabbycatImporter/3.6 (Render; Python requests)',
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
-        self.created_institutions = {}
+        self.created_institutions = {}  # code -> full URL (NO trailing slash)
+        self.created_teams = {}         # team_name -> full URL (NO trailing slash)
         self.stats = {'success': 0, 'failed': 0, 'errors': []}
         self.auth_method = None
         self._authenticate()
@@ -265,6 +266,9 @@ class TabbycatAPI:
         
         return diagnostics
 
+    # -------------------------------------------------------------------------
+    # INSTITUTIONS — GLOBAL ENDPOINT
+    # -------------------------------------------------------------------------
     def create_institution(self, name, code):
         if code in self.created_institutions:
             return self.created_institutions[code]
@@ -274,14 +278,19 @@ class TabbycatAPI:
         result = self._request('POST', url, data)
         
         if result and 'url' in result:
+            # Use API-returned URL (already correct, no trailing slash)
             self.created_institutions[code] = result['url']
             return result['url']
         elif result and 'id' in result:
-            inst_url = f"{self.base_url}/api/v1/institutions/{result['id']}/"
+            # Build URL manually — NO trailing slash (router uses trailing_slash=False)
+            inst_url = f"{self.base_url}/api/v1/institutions/{result['id']}"
             self.created_institutions[code] = inst_url
             return inst_url
         return None
 
+    # -------------------------------------------------------------------------
+    # TEAMS — TOURNAMENT ENDPOINT
+    # -------------------------------------------------------------------------
     def create_team(self, institution_url, reference, short_reference,
                     use_institution_prefix=True, emoji='', speakers=None, code_name=''):
         data = {
@@ -300,6 +309,9 @@ class TabbycatAPI:
         url = self._tournament_url('/teams')
         return self._request('POST', url, data)
 
+    # -------------------------------------------------------------------------
+    # ADJUDICATORS — TOURNAMENT ENDPOINT
+    # -------------------------------------------------------------------------
     def create_adjudicator(self, name, institution_url=None, email='',
                            gender='', base_score=None, independent=False,
                            adj_core=False, notes=''):
@@ -329,12 +341,15 @@ class TabbycatAPI:
         url = self._tournament_url('/adjudicators')
         return self._request('POST', url, data)
 
-    def create_speaker(self, team_id, name, email='', gender=''):
+    # -------------------------------------------------------------------------
+    # SPEAKERS — TOURNAMENT ENDPOINT
+    # -------------------------------------------------------------------------
+    def create_speaker(self, team_url, name, email='', gender=''):
         """
-        CRITICAL FIX v3.5: Tabbycat expects the 'team' field as a full URL,
-        not a raw integer ID. Build the team URL from the team_id.
+        CRITICAL FIX v3.6: 
+        - 'team' must be a full URL with NO trailing slash
+        - Use the team_url passed directly (captured from team creation response)
         """
-        team_url = f"{self.base_url}/api/v1/tournaments/{self.slug}/teams/{team_id}/"
         data = {
             "name": name,
             "team": team_url,
@@ -480,7 +495,7 @@ def process_speakers(rows, max_speakers=None):
 
 def generate_institutions_csv(institutions):
     output = io.StringIO()
-    writer = csv.writer(output)
+n    writer = csv.writer(output)
     writer.writerow(['name', 'code'])
     for inst in institutions:
         writer.writerow([inst['name'], inst['code']])
@@ -560,7 +575,7 @@ def api_diagnose():
     results = []
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'TabbycatImporter/3.5 (Diagnostic)',
+        'User-Agent': 'TabbycatImporter/3.6 (Diagnostic)',
         'Accept': 'application/json'
     })
     if token:
@@ -689,7 +704,6 @@ def upload():
                     speakers_by_team[t].append(spk_data)
 
             # Step 3: Create teams (TOURNAMENT endpoint)
-            created_teams = {}
             for team in teams:
                 inst_url = api.created_institutions.get(team['institution'])
                 team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
@@ -705,14 +719,12 @@ def upload():
                     speakers=team_speakers if team_speakers else None
                 )
                 
-                if result and 'id' in result:
-                    created_teams[team_name] = result['id']
-                
-                # Fallback: create speakers separately if nested failed
-                if result and team_speakers and 'id' in result:
-                    team_id = result['id']
-                    for spk in team_speakers:
-                        api.create_speaker(team_id, spk['name'], spk.get('email', ''), spk.get('gender', ''))
+                # CRITICAL FIX v3.6: Capture team URL from API response (no trailing slash)
+                if result and 'url' in result:
+                    api.created_teams[team_name] = result['url']
+                elif result and 'id' in result:
+                    # Build URL manually — NO trailing slash
+                    api.created_teams[team_name] = f"{api.base_url}/api/v1/tournaments/{api.slug}/teams/{result['id']}"
 
             # Step 4: Create adjudicators (TOURNAMENT endpoint)
             for adj in adjudicators:
@@ -727,6 +739,20 @@ def upload():
                     adj_core=adj['adj_core'],
                     notes=adj['notes']
                 )
+
+            # Step 5: Create speakers via fallback (TOURNAMENT endpoint)
+            # Only create speakers for teams where nested creation may have failed
+            for team_name, team_speakers in speakers_by_team.items():
+                team_url = api.created_teams.get(team_name)
+                if not team_url:
+                    continue  # Team wasn't created, skip speakers
+                for spk in team_speakers:
+                    api.create_speaker(
+                        team_url=team_url,
+                        name=spk['name'],
+                        email=spk.get('email', ''),
+                        gender=spk.get('gender', '')
+                    )
 
             api_results = api.stats
 
