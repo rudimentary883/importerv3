@@ -1,5 +1,5 @@
 """
-Tabbycat API Importer v3.4 — FIXED: Speaker categories required in nested team creation
+Tabbycat API Importer v3.5 — FIXED: Speaker team field requires full URL, not raw ID
 """
 
 import os
@@ -73,7 +73,7 @@ def read_uploaded_file(file):
 
 
 # =============================================================================
-# TABBYCAT API CLIENT (v3.4)
+# TABBYCAT API CLIENT (v3.5)
 # =============================================================================
 
 class TabbycatAPI:
@@ -85,7 +85,7 @@ class TabbycatAPI:
         self.password = password
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'TabbycatImporter/3.4 (Render; Python requests)',
+            'User-Agent': 'TabbycatImporter/3.5 (Render; Python requests)',
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
@@ -330,10 +330,15 @@ class TabbycatAPI:
         return self._request('POST', url, data)
 
     def create_speaker(self, team_id, name, email='', gender=''):
+        """
+        CRITICAL FIX v3.5: Tabbycat expects the 'team' field as a full URL,
+        not a raw integer ID. Build the team URL from the team_id.
+        """
+        team_url = f"{self.base_url}/api/v1/tournaments/{self.slug}/teams/{team_id}/"
         data = {
             "name": name,
-            "team": team_id,
-            "categories": [],  # Required by Tabbycat API
+            "team": team_url,
+            "categories": [],
         }
         if email:
             data["email"] = email
@@ -555,7 +560,7 @@ def api_diagnose():
     results = []
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'TabbycatImporter/3.4 (Diagnostic)',
+        'User-Agent': 'TabbycatImporter/3.5 (Diagnostic)',
         'Accept': 'application/json'
     })
     if token:
@@ -666,8 +671,6 @@ def upload():
                 api.create_institution(inst['name'], inst['code'])
 
             # Step 2: Build speakers by team
-            # CRITICAL FIX v3.4: Every speaker MUST include "categories": []
-            # because Tabbycat's nested Speaker serializer requires it.
             speakers_by_team = {}
             if speakers:
                 for spk in speakers:
@@ -676,7 +679,7 @@ def upload():
                         speakers_by_team[t] = []
                     spk_data = {
                         "name": spk['name'],
-                        "categories": [],  # REQUIRED by Tabbycat API
+                        "categories": [],
                     }
                     if spk['email']:
                         spk_data["email"] = spk['email']
@@ -727,7 +730,6 @@ def upload():
 
             api_results = api.stats
 
-        # Generate CSVs for download mode
         inst_csv = generate_institutions_csv(institutions)
         adj_csv = generate_adjudicators_csv(adjudicators)
         teams_csv = generate_teams_csv(teams)
