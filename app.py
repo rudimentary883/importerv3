@@ -1,5 +1,6 @@
 """
 Tabbycat API Importer v3.6 — FIXED: Speaker team URLs & category support
++ Independent teams (no institution required)
 """
 
 import os
@@ -285,11 +286,12 @@ class TabbycatAPI:
     def create_team(self, institution_url, reference, short_reference,
                     use_institution_prefix=True, emoji='', speakers=None, code_name=''):
         data = {
-            "institution": institution_url,
             "reference": reference,
             "short_reference": short_reference or reference,
             "use_institution_prefix": use_institution_prefix,
         }
+        if institution_url is not None:
+            data["institution"] = institution_url
         if emoji:
             data["emoji"] = emoji
         if code_name:
@@ -425,15 +427,14 @@ def process_teams(rows):
     seen_refs = set()
     for idx, row in enumerate(rows, start=2):
         institution = clean_string(row.get('institution', ''))
-        if not institution:
-            continue
         ref = clean_string(row.get('reference', ''))
         if not ref:
-            errors.append(f"Row {idx}: Missing reference for institution '{institution}'")
+            errors.append(f"Row {idx}: Missing reference for institution '{institution or '(none)'}'")
             continue
-        key = f"{institution}:{ref}"
+        # Independent teams: allow blank institution
+        key = f"{institution or '__INDEPENDENT__'}:{ref}"
         if key in seen_refs:
-            errors.append(f"Row {idx}: Duplicate team reference '{ref}' for institution '{institution}'")
+            errors.append(f"Row {idx}: Duplicate team reference '{ref}' for institution '{institution or '(none)'}'")
             continue
         seen_refs.add(key)
         results.append({
@@ -654,7 +655,8 @@ def upload():
             team_rows = read_uploaded_file(teams_file)
             teams, team_errors = process_teams(team_rows)
             for t in teams:
-                if t['institution'] not in institution_codes:
+                # Independent teams: skip validation when institution is blank
+                if t['institution'] and t['institution'] not in institution_codes:
                     team_errors.append(f"Team '{t['institution']} {t['reference']}': institution code '{t['institution']}' not found in institutions file")
 
         if speakers_file and speakers_file.filename:
@@ -690,8 +692,9 @@ def upload():
             # v3.6: Store team URLs to avoid DRF hyperlink mismatches.
             created_teams = {}  # team_name -> team_url
             for team in teams:
-                inst_url = api.created_institutions.get(team['institution'])
-                team_name = team['team_name_human'] or f"{team['institution']} {team['reference']}"
+                # Independent teams: pass None when institution is blank
+                inst_url = api.created_institutions.get(team['institution']) if team['institution'] else None
+                team_name = team['team_name_human'] or f"{team['institution'] or 'Independent'} {team['reference']}"
 
                 result = api.create_team(
                     institution_url=inst_url,
