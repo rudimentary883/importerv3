@@ -1,149 +1,410 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tabbycat Importer v3.1</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            line-height: 1.6;
+        }
+        h1 { color: #333; margin-bottom: 5px; }
+        .subtitle { color: #666; font-size: 14px; margin-bottom: 25px; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card h2 {
+            margin-top: 0;
+            font-size: 18px;
+            color: #444;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 10px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin: 15px 0 5px;
+            color: #444;
+        }
+        input[type="text"], input[type="password"], input[type="url"], select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input[type="file"] {
+            padding: 8px 0;
+        }
+        .hint {
+            font-size: 12px;
+            color: #888;
+            margin-top: 3px;
+        }
+        .mode-toggle {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .mode-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: normal;
+            cursor: pointer;
+            padding: 8px 14px;
+            border: 2px solid #ccc;
+            border-radius: 6px;
+            flex: 1;
+            justify-content: center;
+        }
+        .mode-toggle input[type="radio"] { display: none; }
+        .mode-toggle input[type="radio"]:checked + label {
+            border-color: #4a90d9;
+            background: #eaf2fb;
+            font-weight: 600;
+        }
+        .api-section {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 10px;
+        }
+        .api-section.hidden { display: none; }
+        .btn {
+            background: #4a90d9;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 15px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn:hover { background: #357abd; }
+        .btn-secondary {
+            background: #6c757d;
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+        .btn-secondary:hover { background: #545b62; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #218838; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .test-result {
+            margin-top: 10px;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            display: none;
+        }
+        .test-result.ok { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .test-result.fail { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .test-result.info { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .flash-messages {
+            margin-bottom: 20px;
+        }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+        .flash.error { background: #f8d7da; color: #721c24; }
+        .flash.info { background: #d1ecf1; color: #0c5460; }
+        .file-section {
+            margin: 15px 0;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 6px;
+            border-left: 4px solid #4a90d9;
+        }
+        .file-section.required { border-left-color: #dc3545; }
+        .file-section h3 {
+            margin: 0 0 8px;
+            font-size: 15px;
+        }
+        .format-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .badge-bp { background: #e3f2fd; color: #1565c0; }
+        .badge-3v3 { background: #f3e5f5; color: #7b1fa2; }
+        .collapsible {
+            cursor: pointer;
+            padding: 10px;
+            background: #e9ecef;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        .collapsible-content {
+            display: none;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 0 0 4px 4px;
+            font-size: 12px;
+        }
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        @media (max-width: 600px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Tabbycat Importer <span style="font-size:14px;color:#888;">v3.1</span></h1>
+    <p class="subtitle">Import institutions, teams, speakers, and adjudicators into Tabbycat</p>
 
-{% block content %}
-<div class="card">
-    <h2>Choose Import Mode</h2>
-    <div class="mode-toggle">
-        <button type="button" class="mode-btn active" onclick="setMode('csv')" id="btn-csv">
-            Download CSVs
-        </button>
-        <button type="button" class="mode-btn" onclick="setMode('api')" id="btn-api">
-            Direct API Import
-        </button>
-    </div>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-messages">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
 
-    <form action="{{ url_for('upload') }}" method="POST" enctype="multipart/form-data" id="upload-form">
-        <input type="hidden" name="mode" id="mode-input" value="csv">
+    <form action="/upload" method="POST" enctype="multipart/form-data">
+        <div class="card">
+            <h2>1. Choose Import Mode</h2>
+            <div class="mode-toggle">
+                <input type="radio" name="mode" id="mode_csv" value="csv" checked onchange="toggleMode()">
+                <label for="mode_csv">
+                    <strong>Download CSVs</strong><br>
+                    <small>Generate files for manual import</small>
+                </label>
 
-        <div class="api-form" id="api-form">
-            <h3 style="margin-bottom: 1rem; color: #4a5568;">Tabbycat API Settings</h3>
-            <div class="form-group">
-                <label for="api_url">Tabbycat URL</label>
-                <input type="url" name="api_url" id="api_url" placeholder="https://your-tournament.herokuapp.com">
-                <small>Your Tabbycat instance URL (e.g., https://wa26.herokuapp.com)</small>
+                <input type="radio" name="mode" id="mode_api" value="api" onchange="toggleMode()">
+                <label for="mode_api">
+                    <strong>Direct API Import</strong><br>
+                    <small>Auto-import via Tabbycat REST API</small>
+                </label>
             </div>
-            <div class="form-group">
-                <label for="api_token">API Token</label>
-                <input type="password" name="api_token" id="api_token" placeholder="Paste your API token here">
-                <small>Found under "Change Password" on your Tabbycat site home page</small>
-            </div>
-            <div class="form-group">
-                <label for="tournament_slug">Tournament Slug</label>
-                <input type="text" name="tournament_slug" id="tournament_slug" placeholder="e.g., wa26">
-                <small>The slug from your tournament URL (e.g., /wa26/)</small>
-            </div>
-            <button type="button" class="btn btn-secondary" onclick="testConnection()" style="margin-bottom: 1rem;">
-                Test Connection
-            </button>
-            <span id="test-result"></span>
+
+            <label>Debate Format <span class="format-badge badge-bp" id="format-badge">BP = 2 speakers/team</span></label>
+            <select name="debate_format" id="debate_format" onchange="updateFormatBadge()">
+                <option value="bp">British Parliamentary (BP) — 2 speakers per team</option>
+                <option value="3v3">3v3 Formats (Australs, WSDC, UADC, etc.) — 3 speakers per team</option>
+            </select>
+            <p class="hint">
+                This controls how many speakers are attached to each team during API import.
+                BP tournaments will only import the first 2 speakers per team.
+                3v3 tournaments will import all speakers (up to 3).
+            </p>
         </div>
 
-        <div class="upload-section">
-            <div class="upload-box required">
-                <label>1. Institutions (REQUIRED)</label>
-                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
-                    Columns: <code>id, name, code</code>
+        <div class="card api-section" id="api_settings">
+            <h2>2. Tabbycat API Settings</h2>
+            
+            <div class="two-col">
+                <div>
+                    <label for="api_url">Tabbycat URL</label>
+                    <input type="url" name="api_url" id="api_url" placeholder="https://yourtournament.calicotab.com">
+                    <p class="hint">Your full Tabbycat site URL (no trailing slash)</p>
+                </div>
+                <div>
+                    <label for="tournament_slug">Tournament Slug</label>
+                    <input type="text" name="tournament_slug" id="tournament_slug" placeholder="thanepreabp2026">
+                    <p class="hint">The part after the slash in your tournament URL</p>
+                </div>
+            </div>
+
+            <label for="api_token">API Token</label>
+            <input type="text" name="api_token" id="api_token" placeholder="abc123def456...">
+            <p class="hint">Found on your Tabbycat "Change Password" page. Looks like a long random string.</p>
+
+            <div class="collapsible" onclick="toggleAdvanced()">
+                ▼ Advanced: Session Auth Fallback (optional)
+            </div>
+            <div class="collapsible-content" id="advanced_content">
+                <p class="hint" style="margin-bottom:10px;">
+                    If your token keeps failing (especially on Calico-hosted sites), you can provide your admin username and password as a fallback. The importer will try token auth first, then log in via Django session if needed.
                 </p>
+                <div class="two-col">
+                    <div>
+                        <label>Admin Username</label>
+                        <input type="text" name="api_username" id="api_username" placeholder="your_username">
+                    </div>
+                    <div>
+                        <label>Admin Password</label>
+                        <input type="password" name="api_password" id="api_password" placeholder="your_password">
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top:15px;">
+                <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+                <button type="button" class="btn btn-danger" style="margin-left:8px;" onclick="deepDiagnose()">Deep Diagnose</button>
+            </div>
+            <div id="test_result" class="test-result"></div>
+            <div id="diagnose_result" class="test-result info"></div>
+        </div>
+
+        <div class="card">
+            <h2>3. Upload Your Data Files</h2>
+            
+            <div class="file-section required">
+                <h3>📋 Institutions (REQUIRED)</h3>
+                <p class="hint">Columns: <code>name, code</code> — Code is the short name used in other files (e.g., UNSW, ANU)</p>
                 <input type="file" name="institutions" accept=".csv,.xlsx,.xls" required>
             </div>
 
-            <div class="upload-box">
-                <label>2. Adjudicators</label>
-                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
-                    Columns: <code>id, name, institution, email, gender, base_score, independent, adj_core, notes</code>
-                </p>
+            <div class="file-section">
+                <h3>⚖️ Adjudicators</h3>
+                <p class="hint">Columns: <code>name, institution, email, gender, base_score, independent, adj_core, notes</code></p>
                 <input type="file" name="adjudicators" accept=".csv,.xlsx,.xls">
             </div>
 
-            <div class="upload-box">
-                <label>3. Teams</label>
-                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
-                    Columns: <code>id, institution, reference, short_reference, code_name, use_institution_prefix, emoji, team_name (human)</code>
-                </p>
+            <div class="file-section">
+                <h3>👥 Teams</h3>
+                <p class="hint">Columns: <code>institution, reference, short_reference, use_institution_prefix, emoji, code_name, team_name (human)</code></p>
                 <input type="file" name="teams" accept=".csv,.xlsx,.xls">
             </div>
 
-            <div class="upload-box">
-                <label>4. Speakers</label>
-                <p style="font-size: 0.85rem; color: #718096; margin-bottom: 0.5rem;">
-                    Columns: <code>id, name, gender, email, phone, anonymous, team, categories, initials_match</code>
-                </p>
+            <div class="file-section">
+                <h3>🎤 Speakers</h3>
+                <p class="hint">Columns: <code>name, gender, email, phone, anonymous, team, categories, initials_match</code></p>
+                <p class="hint">The <code>team</code> column must match the <code>team_name (human)</code> column in the Teams file.</p>
                 <input type="file" name="speakers" accept=".csv,.xlsx,.xls">
             </div>
         </div>
 
-        <div style="text-align: center;">
-            <button type="submit" class="btn btn-primary" id="submit-btn">
-                Process Files
+        <div class="card" style="text-align:center;">
+            <button type="submit" class="btn btn-success" style="font-size:16px;padding:14px 32px;">
+                🚀 Process & Import
             </button>
         </div>
     </form>
-</div>
 
-<div class="card">
-    <h2>How It Works</h2>
-    <div class="instructions">
-        <h4>Mode 1: Download CSVs</h4>
-        <p>Generates Tabbycat-compatible CSV files that you manually import using:</p>
-        <ul>
-            <li><strong>Simple Importer:</strong> Copy-paste into Tabbycat's web interface</li>
-            <li><strong>importtournament command:</strong> Run via SSH on your Tabbycat server</li>
-        </ul>
-    </div>
-    <div class="instructions">
-        <h4>Mode 2: Direct API Import</h4>
-        <p>Connects directly to your Tabbycat instance via REST API and creates:</p>
-        <ul>
-            <li>Institutions first, then Teams (with nested Speakers), then Adjudicators</li>
-            <li>Requires API token from your Tabbycat account</li>
-            <li>Works with Calico, Heroku, Render, or self-hosted Tabbycat</li>
-        </ul>
-    </div>
-</div>
-
-<script>
-function setMode(mode) {
-    document.getElementById('mode-input').value = mode;
-    document.getElementById('btn-csv').classList.toggle('active', mode === 'csv');
-    document.getElementById('btn-api').classList.toggle('active', mode === 'api');
-    document.getElementById('api-form').classList.toggle('active', mode === 'api');
-    document.getElementById('submit-btn').textContent = mode === 'api' ? 'Import Directly to Tabbycat' : 'Process & Download CSVs';
-}
-
-async function testConnection() {
-    const btn = document.querySelector('button[onclick="testConnection()"]');
-    const result = document.getElementById('test-result');
-
-    const url = document.getElementById('api_url').value;
-    const token = document.getElementById('api_token').value;
-    const slug = document.getElementById('tournament_slug').value;
-
-    if (!url || !token || !slug) {
-        result.innerHTML = '<span style="color: #c53030;">Fill in all fields first</span>';
-        return;
-    }
-
-    btn.disabled = true;
-    result.innerHTML = '<span class="spinner"></span> Testing...';
-
-    try {
-        const resp = await fetch('/test-connection', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({base_url: url, token: token, slug: slug})
-        });
-        const data = await resp.json();
-
-        if (data.ok) {
-            result.innerHTML = '<span style="color: #38a169;">Connection successful!</span>';
-        } else {
-            result.innerHTML = '<span style="color: #c53030;">Connection failed. Check URL, token, and that API is enabled in Tabbycat settings.</span>';
+    <script>
+        function toggleMode() {
+            const apiSection = document.getElementById('api_settings');
+            const isApi = document.getElementById('mode_api').checked;
+            apiSection.classList.toggle('hidden', !isApi);
         }
-    } catch (e) {
-        result.innerHTML = '<span style="color: #c53030;">Error: ' + e.message + '</span>';
-    }
 
-    btn.disabled = false;
-}
-</script>
-{% endblock %}
+        function updateFormatBadge() {
+            const fmt = document.getElementById('debate_format').value;
+            const badge = document.getElementById('format-badge');
+            if (fmt === 'bp') {
+                badge.textContent = 'BP = 2 speakers/team';
+                badge.className = 'format-badge badge-bp';
+            } else {
+                badge.textContent = '3v3 = 3 speakers/team';
+                badge.className = 'format-badge badge-3v3';
+            }
+        }
+
+        function toggleAdvanced() {
+            const el = document.getElementById('advanced_content');
+            el.style.display = el.style.display === 'block' ? 'none' : 'block';
+        }
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('test_result');
+            const diagnoseDiv = document.getElementById('diagnose_result');
+            resultDiv.style.display = 'block';
+            diagnoseDiv.style.display = 'none';
+            resultDiv.className = 'test-result info';
+            resultDiv.textContent = 'Testing connection...';
+
+            const payload = {
+                base_url: document.getElementById('api_url').value,
+                token: document.getElementById('api_token').value,
+                slug: document.getElementById('tournament_slug').value,
+                username: document.getElementById('api_username').value,
+                password: document.getElementById('api_password').value
+            };
+
+            try {
+                const resp = await fetch('/test-connection', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+
+                if (data.ok) {
+                    resultDiv.className = 'test-result ok';
+                    resultDiv.innerHTML = `<strong>✅ Connection successful!</strong><br>${data.suggestion}<br><small>Auth method: ${data.auth_method || 'unknown'}</small>`;
+                } else {
+                    resultDiv.className = 'test-result fail';
+                    let html = `<strong>❌ Connection failed</strong><br>${data.suggestion}<br><br><strong>Diagnostic steps:</strong><ul>`;
+                    for (const step of data.steps || []) {
+                        html += `<li>${step.step}: HTTP ${step.status} ${step.ok ? '✓' : '✗'}</li>`;
+                    }
+                    html += '</ul>';
+                    if (data.steps && data.steps.length > 0) {
+                        const last = data.steps[data.steps.length - 1];
+                        if (last.body_preview) {
+                            html += `<small>Last response preview: <code>${last.body_preview.substring(0, 100)}</code></small>`;
+                        }
+                    }
+                    resultDiv.innerHTML = html;
+                }
+            } catch (e) {
+                resultDiv.className = 'test-result fail';
+                resultDiv.textContent = 'Network error: ' + e.message;
+            }
+        }
+
+        async function deepDiagnose() {
+            const resultDiv = document.getElementById('diagnose_result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'test-result info';
+            resultDiv.textContent = 'Running deep diagnosis (trying multiple URL patterns)...';
+
+            const payload = {
+                base_url: document.getElementById('api_url').value,
+                token: document.getElementById('api_token').value,
+                slug: document.getElementById('tournament_slug').value
+            };
+
+            try {
+                const resp = await fetch('/api-diagnose', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+
+                let html = '<strong>🔍 Deep Diagnosis Results</strong><br><br><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+                html += '<tr style="background:#e9ecef;"><th style="text-align:left;padding:6px;">URL</th><th style="padding:6px;">Status</th><th style="text-align:left;padding:6px;">Response Preview</th></tr>';
+                for (const r of data.results) {
+                    const color = r.status === 200 ? '#d4edda' : (r.status === 401 || r.status === 403) ? '#f8d7da' : '#fff3cd';
+                    html += `<tr style="background:${color};"><td style="padding:6px;word-break:break-all;"><code>${r.url}</code></td><td style="padding:6px;text-align:center;font-weight:bold;">${r.status}</td><td style="padding:6px;word-break:break-all;">${r.body_preview || r.error || '-'}</td></tr>`;
+                }
+                html += '</table>';
+                html += '<br><small>Look for a row with status <strong>200</strong> — that is your working API endpoint.</small>';
+                resultDiv.innerHTML = html;
+            } catch (e) {
+                resultDiv.className = 'test-result fail';
+                resultDiv.textContent = 'Network error: ' + e.message;
+            }
+        }
+
+        toggleMode();
+        updateFormatBadge();
+    </script>
+</body>
+</html>
