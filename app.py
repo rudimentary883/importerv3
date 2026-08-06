@@ -1,6 +1,6 @@
 """
-Tabbycat API Importer v3.6 — FIXED: Speaker team URLs & category support
-+ Independent teams (no institution required)
+Tabbycat API Importer v3.6 — FIXED: Speaker team URLs, category support,
+independent teams, and institution regions
 """
 
 import os
@@ -266,11 +266,13 @@ class TabbycatAPI:
 
         return diagnostics
 
-    def create_institution(self, name, code):
+    def create_institution(self, name, code, region=''):
         if code in self.created_institutions:
             return self.created_institutions[code]
 
         data = {"name": name, "code": code}
+        if region:
+            data["region"] = region
         url = self._global_url('/institutions')
         result = self._request('POST', url, data)
 
@@ -389,7 +391,11 @@ def process_institutions(rows):
             errors.append(f"Row {idx}: Duplicate institution code '{code}'")
             continue
         seen_codes.add(code)
-        results.append({'name': name, 'code': code})
+        results.append({
+            'name': name,
+            'code': code,
+            'region': clean_string(row.get('region', ''))
+        })
     return results, errors
 
 
@@ -497,9 +503,9 @@ def process_speakers(rows, max_speakers=None):
 def generate_institutions_csv(institutions):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['name', 'code'])
+    writer.writerow(['name', 'code', 'region'])
     for inst in institutions:
-        writer.writerow([inst['name'], inst['code']])
+        writer.writerow([inst['name'], inst['code'], inst.get('region', '')])
     return output.getvalue()
 
 
@@ -686,7 +692,7 @@ def upload():
 
             # Step 1: Create institutions (GLOBAL endpoint)
             for inst in institutions:
-                api.create_institution(inst['name'], inst['code'])
+                api.create_institution(inst['name'], inst['code'], inst.get('region', ''))
 
             # Step 2: Create teams (TOURNAMENT endpoint)
             # v3.6: Store team URLs to avoid DRF hyperlink mismatches.
